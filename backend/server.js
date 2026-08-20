@@ -166,6 +166,65 @@ app.post("/api/sensor-data", async (req, res) => {
 });
 
 // ==========================================
+// Send Sensor Data
+// ==========================================
+
+app.get("/api/sensor-data/latest", async (req, res) => {
+  try {
+    const latestReading = await SensorData.findOne().sort({ timestamp: -1 });
+
+    if (!latestReading) {
+      return res.status(404).json({
+        success: false,
+        message: "No sensor data found",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: latestReading,
+    });
+  } catch (error) {
+    console.error("Error fetching latest reading:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch latest sensor data",
+    });
+  }
+});
+
+app.get("/api/sensor-data/history", async (req, res) => {
+  try {
+    let limit = parseInt(req.query.limit) || 100;
+
+    if (limit > 1000) {
+      limit = 1000;
+    }
+
+    const readings = await SensorData.find()
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .lean();
+
+    readings.reverse();
+
+    res.json({
+      success: true,
+      count: readings.length,
+      data: readings,
+    });
+  } catch (error) {
+    console.error("Error fetching sensor history:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch sensor history",
+    });
+  }
+});
+
+// ==========================================
 // Start Server
 // ==========================================
 
