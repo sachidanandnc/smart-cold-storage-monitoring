@@ -1,0 +1,10 @@
+#ifndef WIFI_H
+#define WIFI_H
+
+#define MY_WIFI_SSID "YOUR_WIFI_NAME"
+#define MY_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+
+#define SERVER_IP "YOUR_LAPTOP_IP"
+#define SERVER_PORT 5000
+
+#endif
