@@ -98,6 +98,22 @@ const sensorDataSchema = new mongoose.Schema(
       required: true,
     },
 
+    riskScore: {
+      type: Number,
+      default: 0,
+    },
+
+    riskLevel: {
+      type: String,
+      enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+      default: "LOW",
+    },
+
+    riskReasons: {
+      type: [String],
+      default: [],
+    },
+
     timestamp: {
       type: Date,
       default: Date.now,
@@ -541,6 +557,132 @@ async function handleDoorState(sensorData) {
 }
 
 // ==========================================
+// Environmental Storage Risk Engine
+// ==========================================
+
+function calculateRisk(sensorData, doorStatus) {
+  const { temperature, humidity, doorOpen } = sensorData;
+
+  const doorDuration = doorStatus.durationSeconds || 0;
+
+  let score = 0;
+
+  const reasons = [];
+
+  // ==========================================
+  // 1. Temperature Risk
+  // Maximum: 55 points
+  // ==========================================
+
+  let temperatureDeviation = 0;
+
+  if (temperature > TEMP_MAX) {
+    temperatureDeviation = temperature - TEMP_MAX;
+  } else if (temperature < TEMP_MIN) {
+    temperatureDeviation = TEMP_MIN - temperature;
+  }
+
+  if (temperatureDeviation > 0) {
+    if (temperatureDeviation <= 2) {
+      score += 20;
+
+      reasons.push("Temperature is slightly outside the safe range");
+    } else if (temperatureDeviation <= 5) {
+      score += 35;
+
+      reasons.push("Temperature is significantly outside the safe range");
+    } else {
+      score += 55;
+
+      reasons.push("Temperature is far outside the safe range");
+    }
+  }
+
+  // ==========================================
+  // 2. Humidity Risk
+  // Maximum: 20 points
+  // ==========================================
+
+  let humidityDeviation = 0;
+
+  if (humidity > HUMIDITY_MAX) {
+    humidityDeviation = humidity - HUMIDITY_MAX;
+  } else if (humidity < HUMIDITY_MIN) {
+    humidityDeviation = HUMIDITY_MIN - humidity;
+  }
+
+  if (humidityDeviation > 0) {
+    if (humidityDeviation <= 10) {
+      score += 8;
+
+      reasons.push("Humidity is slightly outside the safe range");
+    } else if (humidityDeviation <= 20) {
+      score += 14;
+
+      reasons.push("Humidity is significantly outside the safe range");
+    } else {
+      score += 20;
+
+      reasons.push("Humidity is far outside the safe range");
+    }
+  }
+
+  // ==========================================
+  // 3. Door Exposure Risk
+  // Maximum: 25 points
+  // ==========================================
+
+  if (doorOpen) {
+    if (doorDuration < DOOR_WARNING_SECONDS) {
+      score += 5;
+
+      reasons.push("Storage door is currently open");
+    } else if (doorDuration < DOOR_CRITICAL_SECONDS) {
+      score += 15;
+
+      reasons.push(`Door has remained open for ${doorDuration} seconds`);
+    } else {
+      score += 25;
+
+      reasons.push(
+        `Door has remained open for a critical duration of ${doorDuration} seconds`,
+      );
+    }
+  }
+
+  // ==========================================
+  // Ensure score never exceeds 100
+  // ==========================================
+
+  score = Math.min(score, 100);
+
+  // ==========================================
+  // Determine Risk Level
+  // ==========================================
+
+  let level = "LOW";
+
+  if (score >= 75) {
+    level = "CRITICAL";
+  } else if (score >= 50) {
+    level = "HIGH";
+  } else if (score >= 25) {
+    level = "MEDIUM";
+  }
+
+  // No abnormal conditions
+  if (reasons.length === 0) {
+    reasons.push("All monitored conditions are within configured limits");
+  }
+
+  return {
+    score,
+    level,
+    reasons,
+  };
+}
+
+// ==========================================
 // Health Check Route
 // ==========================================
 
@@ -621,6 +763,22 @@ app.post("/api/sensor-data", async (req, res) => {
     const doorStatus = await handleDoorState(savedData);
 
     // ------------------------------------------
+    // Evaluate Risk Status
+    // ------------------------------------------
+
+    const risk = calculateRisk(savedData, doorStatus);
+
+    // Save calculated risk with sensor reading
+
+    savedData.riskScore = risk.score;
+
+    savedData.riskLevel = risk.level;
+
+    savedData.riskReasons = risk.reasons;
+
+    await savedData.save();
+
+    // ------------------------------------------
     // Evaluate Alerts Again After Door Status Update
     // ------------------------------------------
 
@@ -633,12 +791,18 @@ app.post("/api/sensor-data", async (req, res) => {
 
     console.log("\n=============================");
     console.log("📥 NEW SENSOR DATA RECEIVED");
+
     console.log("Temperature :", temperature, "°C");
     console.log("Humidity    :", humidity, "%");
+
     console.log("Door        :", doorOpen ? "OPEN 🚨" : "CLOSED ✅");
+
     console.log("Door Time   :", doorStatus.durationSeconds, "seconds");
+
     console.log("Saved ID    :", savedData._id);
+
     console.log("Alerts      :", totalAlertsGenerated);
+
     console.log(
       "Door Alert  :",
       doorStatus.alertCreated
@@ -647,7 +811,15 @@ app.post("/api/sensor-data", async (req, res) => {
           ? "ESCALATED"
           : "NONE",
     );
+
+    console.log("Risk Score  :", `${risk.score}/100`);
+
+    console.log("Risk Level  :", risk.level);
+
+    console.log("Risk Reasons:", risk.reasons.join(" | "));
+
     console.log("Timestamp   :", savedData.timestamp.toLocaleString());
+
     console.log("=============================");
 
     // ------------------------------------------
@@ -656,6 +828,7 @@ app.post("/api/sensor-data", async (req, res) => {
 
     res.status(201).json({
       success: true,
+
       message: "Sensor data saved",
 
       id: savedData._id,
@@ -664,9 +837,20 @@ app.post("/api/sensor-data", async (req, res) => {
 
       door: {
         open: doorOpen,
+
         durationSeconds: doorStatus.durationSeconds,
+
         alertCreated: doorStatus.alertCreated,
+
         alertEscalated: doorStatus.alertEscalated,
+      },
+
+      risk: {
+        score: risk.score,
+
+        level: risk.level,
+
+        reasons: risk.reasons,
       },
     });
   } catch (error) {
@@ -804,6 +988,57 @@ app.get("/api/door-events", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to fetch door events",
+    });
+  }
+});
+
+// ==========================================
+// Current Storage Risk API
+// GET /api/risk/current
+// ==========================================
+
+app.get("/api/risk/current", async (req, res) => {
+  try {
+    const latestReading = await SensorData.findOne().sort({
+      timestamp: -1,
+    });
+
+    if (!latestReading) {
+      return res.status(404).json({
+        success: false,
+
+        message: "No sensor data found",
+      });
+    }
+
+    res.json({
+      success: true,
+
+      risk: {
+        score: latestReading.riskScore,
+
+        level: latestReading.riskLevel,
+
+        reasons: latestReading.riskReasons,
+      },
+
+      sensorData: {
+        temperature: latestReading.temperature,
+
+        humidity: latestReading.humidity,
+
+        doorOpen: latestReading.doorOpen,
+
+        timestamp: latestReading.timestamp,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error fetching current risk:", error.message);
+
+    res.status(500).json({
+      success: false,
+
+      message: "Failed to fetch current risk",
     });
   }
 });
