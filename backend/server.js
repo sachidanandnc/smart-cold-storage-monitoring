@@ -621,6 +621,13 @@ app.post("/api/sensor-data", async (req, res) => {
     const doorStatus = await handleDoorState(savedData);
 
     // ------------------------------------------
+    // Evaluate Alerts Again After Door Status Update
+    // ------------------------------------------
+
+    const totalAlertsGenerated =
+      generatedAlerts.length + (doorStatus.alertCreated ? 1 : 0);
+
+    // ------------------------------------------
     // Console Logging
     // ------------------------------------------
 
@@ -631,7 +638,15 @@ app.post("/api/sensor-data", async (req, res) => {
     console.log("Door        :", doorOpen ? "OPEN 🚨" : "CLOSED ✅");
     console.log("Door Time   :", doorStatus.durationSeconds, "seconds");
     console.log("Saved ID    :", savedData._id);
-    console.log("Alerts      :", generatedAlerts.length);
+    console.log("Alerts      :", totalAlertsGenerated);
+    console.log(
+      "Door Alert  :",
+      doorStatus.alertCreated
+        ? "CREATED"
+        : doorStatus.alertEscalated
+          ? "ESCALATED"
+          : "NONE",
+    );
     console.log("Timestamp   :", savedData.timestamp.toLocaleString());
     console.log("=============================");
 
@@ -645,12 +660,13 @@ app.post("/api/sensor-data", async (req, res) => {
 
       id: savedData._id,
 
-      alertsGenerated:
-        generatedAlerts.length + (doorStatus.alertCreated ? 1 : 0),
+      alertsGenerated: totalAlertsGenerated,
 
       door: {
         open: doorOpen,
         durationSeconds: doorStatus.durationSeconds,
+        alertCreated: doorStatus.alertCreated,
+        alertEscalated: doorStatus.alertEscalated,
       },
     });
   } catch (error) {
@@ -775,29 +791,19 @@ app.get("/api/alerts", async (req, res) => {
 
 app.get("/api/door-events", async (req, res) => {
   try {
-
-    const events = await DoorEvent
-      .find()
-      .sort({ openedAt: -1 })
-      .limit(100);
+    const events = await DoorEvent.find().sort({ openedAt: -1 }).limit(100);
 
     res.json({
       success: true,
       count: events.length,
       data: events,
     });
-
   } catch (error) {
-
-    console.error(
-      "❌ Error fetching door events:",
-      error.message
-    );
+    console.error("❌ Error fetching door events:", error.message);
 
     res.status(500).json({
       success: false,
-      message:
-        "Failed to fetch door events",
+      message: "Failed to fetch door events",
     });
   }
 });
