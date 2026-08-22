@@ -13,6 +13,13 @@ require("dotenv").config();
 
 const app = express();
 
+// ==========================================
+// Middleware
+// ==========================================
+
+app.use(cors());
+app.use(express.json());
+
 const PORT = process.env.PORT || 5000;
 
 // ==========================================
@@ -50,27 +57,35 @@ if (DOOR_WARNING_SECONDS >= DOOR_CRITICAL_SECONDS) {
 
   process.exit(1);
 }
+if (TEMP_MIN >= TEMP_MAX) {
+  console.error("❌ TEMP_MIN must be less than TEMP_MAX");
+  process.exit(1);
+}
 
-// ==========================================
-// Middleware
-// ==========================================
+if (HUMIDITY_MIN >= HUMIDITY_MAX) {
+  console.error("❌ HUMIDITY_MIN must be less than HUMIDITY_MAX");
+  process.exit(1);
+}
 
-app.use(cors());
-app.use(express.json());
+if (DOOR_WARNING_SECONDS <= 0 || DOOR_CRITICAL_SECONDS <= 0) {
+  console.error("❌ Door thresholds must be greater than 0");
+  process.exit(1);
+}
 
 // ==========================================
 // MongoDB Connection
 // ==========================================
 
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => {
+async function connectDatabase() {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI);
     console.log("✅ MongoDB connected");
-  })
-  .catch((error) => {
+  } catch (error) {
     console.error("❌ MongoDB connection failed:");
     console.error(error.message);
-  });
+    process.exit(1);
+  }
+}
 
 // ==========================================
 // Sensor Data Schema
@@ -435,15 +450,14 @@ async function handleDoorState(sensorData) {
       if (doorAlert.severity !== "CRITICAL") {
         doorAlert.severity = "CRITICAL";
 
-        doorAlert.message =
-          `Door has been open for ` + `${durationSeconds} seconds`;
-
         doorAlert.value = durationSeconds;
+
+        doorAlert.message = `Door has been open for ${durationSeconds} seconds`;
 
         await doorAlert.save();
 
         console.log(
-          `🚨 ESCALATED TO CRITICAL | ` + `DOOR OPEN | ${durationSeconds}s`,
+          `🚨 ESCALATED TO CRITICAL | DOOR OPEN | ${durationSeconds}s`,
         );
 
         return {
@@ -456,6 +470,7 @@ async function handleDoorState(sensorData) {
 
       // Update current duration
       doorAlert.value = durationSeconds;
+      doorAlert.message = `Door has been open for ${durationSeconds} seconds`;
 
       await doorAlert.save();
 
@@ -495,6 +510,7 @@ async function handleDoorState(sensorData) {
 
       // Update duration without creating duplicate
       doorAlert.value = durationSeconds;
+      doorAlert.message = `Door has been open for ${durationSeconds} seconds`;
 
       await doorAlert.save();
     }
@@ -724,12 +740,20 @@ app.post("/api/sensor-data", async (req, res) => {
 
     if (
       typeof temperature !== "number" ||
+      !Number.isFinite(temperature) ||
       typeof humidity !== "number" ||
+      !Number.isFinite(humidity) ||
       typeof doorOpen !== "boolean"
     ) {
       return res.status(400).json({
         success: false,
         message: "Invalid sensor data types",
+      });
+    }
+    if (humidity < 0 || humidity > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Humidity must be between 0 and 100",
       });
     }
 
@@ -779,7 +803,7 @@ app.post("/api/sensor-data", async (req, res) => {
     await savedData.save();
 
     // ------------------------------------------
-    // Evaluate Alerts Again After Door Status Update
+    // Calculate Number of Newly Generated Alerts
     // ------------------------------------------
 
     const totalAlertsGenerated =
@@ -1047,12 +1071,20 @@ app.get("/api/risk/current", async (req, res) => {
 // Start Server
 // ==========================================
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server listening on port ${PORT}`);
+async function startServer() {
+  await connectDatabase();
 
-  console.log("\n📊 Alert Thresholds");
-  console.log("-----------------------------");
-  console.log(`Temperature : ${TEMP_MIN}°C - ${TEMP_MAX}°C`);
-  console.log(`Humidity    : ${HUMIDITY_MIN}% - ${HUMIDITY_MAX}%`);
-  console.log("-----------------------------\n");
-});
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 Server listening on port ${PORT}`);
+
+    console.log("\n📊 Alert Thresholds");
+    console.log("-----------------------------");
+    console.log(`Temperature : ${TEMP_MIN}°C - ${TEMP_MAX}°C`);
+    console.log(`Humidity    : ${HUMIDITY_MIN}% - ${HUMIDITY_MAX}%`);
+    console.log(`Door Warning  : ${DOOR_WARNING_SECONDS}s`);
+    console.log(`Door Critical : ${DOOR_CRITICAL_SECONDS}s`);
+    console.log("-----------------------------\n");
+  });
+}
+
+startServer();
