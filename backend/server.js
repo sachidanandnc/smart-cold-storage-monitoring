@@ -31,14 +31,7 @@ function matchesSecret(provided, expected) {
   const configured = Buffer.from(expected);
   return actual.length === configured.length && timingSafeEqual(actual, configured);
 }
-app.use((req, res, next) => {
-  if (req.method === "GET" && req.path.startsWith("/api/") &&
-      process.env.DASHBOARD_READ_KEY &&
-      !matchesSecret(req.get?.("X-Dashboard-Key"), process.env.DASHBOARD_READ_KEY)) {
-    return res.status(401).json({ success: false, message: "Dashboard access key required" });
-  }
-  next();
-});
+// Dashboard reads are public. Device uploads below still require X-Device-Key.
 // A generous upload cap permits fast replay of the bounded offline queue.
 const requestWindows = new Map();
 app.use((req, res, next) => {
@@ -1216,9 +1209,6 @@ async function startServer() {
     }
     if (!process.env.CORS_ORIGIN) {
       throw new Error("CORS_ORIGIN is required in production");
-    }
-    if (!process.env.DASHBOARD_READ_KEY || process.env.DASHBOARD_READ_KEY.length < 32) {
-      throw new Error("DASHBOARD_READ_KEY must contain at least 32 characters in production");
     }
   }
   await connectDatabase();

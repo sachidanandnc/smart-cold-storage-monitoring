@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, readHeaders } from "./api";
+import { API_BASE } from "./api";
 import { extractDoorEvents } from "./analytics";
 
-export default function useDoorEvents(readKey) {
-  const [state, setState] = useState({ data: null, error: "", pending: true, lastUpdated: null, readKey });
+export default function useDoorEvents() {
+  const [state, setState] = useState({ data: null, error: "", pending: true, lastUpdated: null });
   const retryRef = useRef(() => {});
   useEffect(() => {
     let disposed = false;
@@ -15,17 +15,16 @@ export default function useDoorEvents(readKey) {
       busy = true;
       controller = new AbortController();
       timeout = setTimeout(() => controller.abort(), 10000);
-      setState(previous => previous.readKey === readKey ? { ...previous, pending: true }
-        : { data: null, error: "", pending: true, lastUpdated: null, readKey });
+      setState(previous => ({ ...previous, pending: true }));
       try {
         const response = await fetch(API_BASE + "/api/door-events", {
-          signal: controller.signal, cache: "no-store", headers: readHeaders(readKey),
+          signal: controller.signal, cache: "no-store",
         });
         if (!response.ok) throw new Error("HTTP " + response.status);
         const payload = await response.json();
         if (payload?.success === false) throw new Error("Door events unavailable");
         const data = extractDoorEvents(payload);
-        if (!disposed) setState({ data, error: "", pending: false, lastUpdated: Date.now(), readKey });
+        if (!disposed) setState({ data, error: "", pending: false, lastUpdated: Date.now() });
       } catch {
         if (!disposed) setState(previous => ({ ...previous, error: "Door activity could not be refreshed.", pending: false }));
       } finally {
@@ -42,7 +41,7 @@ export default function useDoorEvents(readKey) {
       clearTimeout(timeout);
       controller?.abort();
     };
-  }, [readKey]);
+  }, []);
   const retry = useCallback(() => retryRef.current(), []);
-  return { ...(state.readKey === readKey ? state : { data: null, error: "", pending: true, lastUpdated: null }), retry };
+  return { ...state, retry };
 }
