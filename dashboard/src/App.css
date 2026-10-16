@@ -359,7 +359,12 @@ body:has(.cold-app) { display: block; min-height: 100vh; background: #f6f0e8; }
 .cold-app .notice-error { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 22%, transparent); color: var(--danger); }
 .cold-app .notice-info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
 .cold-app .notice .button { background: transparent; color: inherit; border-color: currentColor; min-height: 33px; }
-.cold-app .access-key-form input { display: block; width: min(360px, 100%); margin-top: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; }
+.cold-app .access-dialog { width: min(420px, calc(100% - 40px)); box-sizing: border-box; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); font: inherit; box-shadow: var(--shadow-hover); }
+.cold-app .access-dialog::backdrop { background: rgb(30 24 20 / 40%); }
+.cold-app .access-dialog h2 { margin: 0 0 8px; }
+.cold-app .access-dialog p { color: var(--text-secondary); }
+.cold-app .access-dialog input { display: block; box-sizing: border-box; width: 100%; margin-top: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; }
+.cold-app .access-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .cold-app .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 300px; padding: 40px 24px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); text-align: center; }
 .cold-app .empty-state > svg { width: 32px; height: 32px; margin-bottom: 16px; color: var(--text-muted); }
 .cold-app .empty-state h2 { font-size: 19px; font-weight: 600; letter-spacing: -.4px; }

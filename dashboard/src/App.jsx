@@ -177,12 +177,39 @@ function HistoryChart({ title, subtitle, rows, dataKey, unit, color, current, wi
   </article>;
 }
 
+function DashboardAccess({ onConnect }) {
+  const dialog = useRef(null);
+  const [key, setKey] = useState("");
+  return <>
+    <button type="button" className="button" onClick={() => dialog.current.showModal()}><Icon name="shield" size={16} />Access</button>
+    <dialog ref={dialog} className="access-dialog" aria-labelledby="access-title" aria-describedby="access-description">
+      <form onSubmit={event => {
+        event.preventDefault();
+        const value = key.trim();
+        if (!value) return;
+        saveReadKey(value);
+        onConnect(value);
+        setKey("");
+        dialog.current.close();
+      }}>
+        <h2 id="access-title">Unlock dashboard</h2>
+        <p id="access-description">Enter your dashboard access key to view protected readings.</p>
+        <label htmlFor="dashboard-key">Access key</label>
+        <input id="dashboard-key" type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} required />
+        <div className="access-dialog-actions">
+          <button className="button" type="button" onClick={() => { setKey(""); dialog.current.close(); }}>Cancel</button>
+          <button className="button" type="submit">Connect</button>
+        </div>
+      </form>
+    </dialog>
+  </>;
+}
+
 export default function App({ previewMode = false }) {
   const [historyLimit, setHistoryLimit] = useState(50);
   const [now, setNow] = useState(Date.now);
   const [activeSection, setActiveSection] = useState("overview");
   const [readKey, setReadKey] = useState(savedReadKey);
-  const [enteredKey, setEnteredKey] = useState("");
   const current = usePolling(API_BASE + "/api/risk/current", validateCurrent, "Unable to connect to the cold-storage backend.", readKey);
   const history = usePolling(API_BASE + "/api/sensor-data/history?limit=" + historyLimit, validateHistory, "Unable to load historical readings.", readKey);
   useEffect(() => {
@@ -213,7 +240,7 @@ export default function App({ previewMode = false }) {
   const delayed = current.data && (readingTime === null || now - readingTime > READING_DELAY_MS || readingTime - now > READING_DELAY_MS);
   const stale = Boolean(current.error || delayed);
   const loading = !current.data && current.pending && !current.error;
-  const connectionLabel = current.error ? "Connection interrupted" : !current.data ? "Connecting" : delayed ? "Reading delayed" : "Connected";
+  const connectionLabel = current.error === "Access key required or incorrect." ? "Access required" : current.error ? "Connection interrupted" : !current.data ? "Connecting" : delayed ? "Reading delayed" : "Connected";
   const doorOpen = sensor?.doorOpen === true || sensor?.doorOpen === 1 || sensor?.doorOpen === "true";
   const doorClosed = sensor?.doorOpen === false || sensor?.doorOpen === 0 || sensor?.doorOpen === "false";
   const deviceId = typeof sensor?.deviceId === "string" && sensor.deviceId.trim() ? sensor.deviceId : "Storage unit";
@@ -233,13 +260,11 @@ export default function App({ previewMode = false }) {
       <div className="sidebar-bottom"><div className="node-card"><span className="node-icon"><Icon name="server" /></span><p className="node-caption">MONITORED DEVICE</p><strong className="node-id">{deviceId}</strong><div className="node-foot"><span className={"status-dot" + (stale || !current.data ? " is-muted" : "")} />{previewMode ? "Preview device" : "Single storage unit"}</div></div><p className="sidebar-note"><Icon name="snow" size={14} /> Precision in every degree.</p></div>
     </aside>
     <div className="workspace">
-      <header className="topbar"><div className="breadcrumb"><span>Workspace</span><Icon name="arrow" size={13} /><strong>Cold storage</strong></div><div className="topbar-actions"><span className="polling-note"><Icon name="clock" size={14} /> Updates every 5 seconds</span></div></header>
+      <header className="topbar"><div className="breadcrumb"><span>Workspace</span><Icon name="arrow" size={13} /><strong>Cold storage</strong></div><div className="topbar-actions">{!previewMode && <DashboardAccess onConnect={key => { if (key === readKey) { current.refresh(); history.refresh(); } else setReadKey(key); }} />}<span className="polling-note"><Icon name="clock" size={14} /> Updates every 5 seconds</span></div></header>
       <main className="dashboard" id="main" tabIndex={-1}>
         <section className="page-heading" id="overview" aria-labelledby="page-title"><div><p className="eyebrow"><span className="status-dot" /> ENVIRONMENTAL MONITORING</p><h1 id="page-title">Storage overview<span>.</span></h1><p className="page-description">A clear view of your storage. Confidence in every reading.</p></div><div className="heading-actions"><span className={"connection-badge" + (stale || !current.data ? " is-muted" : "")} role="status"><span className="status-dot" />{previewMode && current.data ? "Demo data" : connectionLabel}</span><button type="button" className="button refresh-button" onClick={refreshAll} disabled={current.pending && history.pending}><Icon name="refresh" size={16} />Refresh</button></div></section>
 
         {previewMode && <div className="notice notice-info"><Icon name="grid" /><div><strong>Design preview</strong><p>Illustrative sensor data. Your replacement App.jsx connects to your existing backend.</p></div></div>}
-        {current.error === "Access key required or incorrect." && <form className="notice notice-warning access-key-form" onSubmit={event => { event.preventDefault(); const key = enteredKey.trim(); saveReadKey(key); setReadKey(key); setEnteredKey(""); }}><Icon name="shield" /><div><label htmlFor="dashboard-key"><strong>Dashboard access key</strong></label><p>Enter the read key configured on the backend. It stays in this browser tab's session storage.</p><input id="dashboard-key" type="password" autoComplete="off" value={enteredKey} onChange={event => setEnteredKey(event.target.value)} required /></div><button className="button" type="submit">Connect</button></form>}
-        {current.error && <div className="notice notice-error"><Icon name="warning" /><div role="alert"><strong>{current.data ? "Connection interrupted · readings may be out of date" : "Unable to reach cold storage"}</strong><p>{current.error} {current.data ? "Showing the last successful readings. Reconnecting automatically." : "Automatic retries continue every 5 seconds."}</p></div><button type="button" className="button" disabled={current.pending} onClick={current.refresh}>{current.pending ? "Retrying…" : "Retry connection"}</button></div>}
         {delayed && !current.error && <div className="notice notice-warning" role="status"><Icon name="clock" /><div><strong>Sensor reading is delayed</strong><p>The backend is reachable, but the reading timestamp is missing, outside the last 30 seconds, or ahead of this device's clock. Last reading: {timeLabel(sensor?.timestamp, true)}.</p></div></div>}
         {loading && <p className="loading-label" role="status">Connecting to cold storage…</p>}
 
