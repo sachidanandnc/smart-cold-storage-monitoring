@@ -1,19 +1,7 @@
 .cold-app .door-timeline .chart-dot { background: var(--warning); }
-.cold-app .door-period-count { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
-.cold-app .door-timeline-plot { margin: 17px 23px 0; }
-.cold-app .door-timeline-plot svg { display: block; width: 100%; height: 70px; overflow: visible; }
-.cold-app .door-timeline-track { fill: var(--surface-soft); }
-.cold-app .door-timeline-period { fill: var(--warning); opacity: .65; cursor: pointer; }
-.cold-app .door-timeline-period.is-selected, .cold-app .door-timeline-period:hover { opacity: 1; }
-.cold-app .door-timeline-period.is-uncertain { fill: var(--text-muted); stroke: var(--surface); stroke-dasharray: 5 4; }
-.cold-app .door-timeline-period:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.cold-app .door-timeline-axis { display: flex; justify-content: space-between; gap: 6px; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
-.cold-app .door-period-detail { display: flex; flex-direction: column; gap: 3px; min-height: 70px; margin: 20px 23px 0; color: var(--text-secondary); font-size: 11px; }
-.cold-app .door-period-detail strong { color: var(--text); font-size: 18px; font-weight: 550; }
-.cold-app .door-timeline-note, .cold-app .door-timeline-empty { margin: 10px 23px 15px; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
-.cold-app .door-timeline-empty { min-height: 70px; padding-top: 20px; }
+.cold-app .door-state-tooltip { max-width: 270px; }
+.cold-app .door-state-tooltip strong { margin-bottom: 7px; }
+.cold-app .door-state-tooltip > span { margin-bottom: 4px; line-height: 1.5; }
+.cold-app .door-state-tooltip > span:last-child { margin-bottom: 0; }
+.cold-app .door-timeline-note { margin: 0 23px 12px; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
 .cold-app .door-timeline-note button { border: 0; padding: 0 4px; background: transparent; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
-@media (max-width: 640px) {
-  .cold-app .door-timeline .chart-header { padding: 18px 17px 8px; }
-  .cold-app .door-timeline-plot, .cold-app .door-period-detail, .cold-app .door-timeline-note, .cold-app .door-timeline-empty { margin-left: 17px; margin-right: 17px; }
-}

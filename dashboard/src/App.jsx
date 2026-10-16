@@ -6,6 +6,7 @@ import "./App.css";
 import AnalyticsSection from "./AnalyticsSection";
 import DoorTimeline from "./DoorTimeline";
 import useDoorEvents from "./useDoorEvents";
+import { newestHistoryFirst } from "./doorActivity";
 import { API_BASE, readHeaders, savedReadKey, saveReadKey } from "./api";
 
 // Keep the existing backend endpoints.
@@ -74,6 +75,7 @@ function validateHistory(payload) {
     timestamp: row.timestamp,
     time: timeValue(row.timestamp),
     capturedAt: row.capturedAt,
+    timeQuality: row.timeQuality,
     receivedAt: row.receivedAt,
     historical: row.historical === true,
     liveEligible: row.liveEligible === true,
@@ -239,6 +241,7 @@ export default function App({ previewMode = false }) {
   const score = number(risk?.score);
   const reasons = Array.isArray(risk?.reasons) ? risk.reasons.filter(reason => typeof reason === "string" && reason.trim()) : [];
   const rows = history.data || [];
+  const newestRows = useMemo(() => newestHistoryFirst(history.data || []), [history.data]);
   const chartRows = useMemo(() => (history.data || []).filter(row => row.time !== null), [history.data]);
   const readingTime = timeValue(sensor?.timestamp);
   const delayed = current.data && (readingTime === null || now - readingTime > READING_DELAY_MS || readingTime - now > READING_DELAY_MS);
@@ -294,9 +297,9 @@ export default function App({ previewMode = false }) {
             <HistoryChart title="Temperature" subtitle="Cold storage air temperature" rows={chartRows} dataKey="temperature" unit="°C" color="var(--temperature)" current={sensor?.temperature} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
             <HistoryChart title="Relative humidity" subtitle="Moisture level inside storage" rows={chartRows} dataKey="humidity" unit="%" color="var(--humidity)" current={sensor?.humidity} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
             <HistoryChart title="Environmental risk" subtitle="Recorded risk scores · 0–100 scale" rows={chartRows} dataKey="riskScore" unit="/100" color="var(--risk-chart)" current={score} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
-            <DoorTimeline events={doorEvents} rows={chartRows} sensor={sensor} stale={stale} />
+            <DoorTimeline events={doorEvents} rows={chartRows} sensor={sensor} stale={stale || Boolean(history.error)} pending={history.pending && !history.data} failed={Boolean(history.error)} />
           </div>
-          <div className="history-table"><details><summary>View reading data <span>{rows.length} readings</span></summary><div className="table-scroll" tabIndex={0} role="region" aria-label="Sensor readings table"><table><caption>History returned by the backend, oldest first. Times use your browser's timezone. Unknown capture times are shown at server receipt time in charts.</caption><thead><tr><th scope="col">Captured at</th><th scope="col">Server received</th><th scope="col">Delivery</th><th scope="col">Temperature (°C)</th><th scope="col">Humidity (%)</th><th scope="col">Door</th><th scope="col">Risk (/100)</th><th scope="col">Risk level</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={row.readingId || index}><td>{row.capturedAt ? timeLabel(row.capturedAt, true) : "Unknown (not recorded)"}</td><td>{timeLabel(row.receivedAt, true)}</td><td>{row.historical ? "Backfilled" : row.liveEligible ? "Live" : "Recorded"}</td><td>{format(row.temperature)}</td><td>{format(row.humidity)}</td><td>{row.doorOpen === true ? "Open" : row.doorOpen === false ? "Closed" : "Unknown"}</td><td>{format(row.riskScore, 0)}</td><td>{row.riskLevel || "—"}</td></tr>) : <tr><td colSpan={8}>No history readings available.</td></tr>}</tbody></table></div></details></div>
+          <div className="history-table"><details><summary>View reading data <span>{rows.length} readings</span></summary><div className="table-scroll" tabIndex={0} role="region" aria-label="Sensor readings table"><table><caption>Recent readings, newest first. Times use your browser's timezone. Unknown capture times are shown at server receipt time in charts.</caption><thead><tr><th scope="col">Captured at</th><th scope="col">Server received</th><th scope="col">Delivery</th><th scope="col">Temperature (°C)</th><th scope="col">Humidity (%)</th><th scope="col">Door</th><th scope="col">Risk (/100)</th><th scope="col">Risk level</th></tr></thead><tbody>{rows.length ? newestRows.map((row, index) => <tr key={row.readingId || index}><td>{row.capturedAt ? timeLabel(row.capturedAt, true) : "Unknown (not recorded)"}</td><td>{timeLabel(row.receivedAt, true)}</td><td>{row.historical ? "Backfilled" : row.liveEligible ? "Live" : "Recorded"}</td><td>{format(row.temperature)}</td><td>{format(row.humidity)}</td><td>{row.doorOpen === true ? "Open" : row.doorOpen === false ? "Closed" : "Unknown"}</td><td>{format(row.riskScore, 0)}</td><td>{row.riskLevel || "—"}</td></tr>) : <tr><td colSpan={8}>No history readings available.</td></tr>}</tbody></table></div></details></div>
         </section>
         <AnalyticsSection historyData={chartRows} historyLimit={historyLimit}
           historyPending={history.pending && !history.data} historyError={history.error} doorEvents={doorEvents} />

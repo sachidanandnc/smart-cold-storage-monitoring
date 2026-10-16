@@ -106,3 +106,31 @@ export function doorTime(value, full = false) {
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   }).format(value);
 }
+
+export function newestHistoryFirst(rows) {
+  const rowTime = row => Number.isFinite(row.time) ? row.time : time(row.timestamp) ?? time(row.receivedAt) ?? -Infinity;
+  return [...rows].sort((a, b) => rowTime(b) - rowTime(a));
+}
+
+export function doorStateRows(rows, periods = [], maxGapMs = 15000) {
+  const samples = [...rows].filter(row => Number.isFinite(row.time)).sort((a, b) => a.time - b.time);
+  const points = [];
+  let previous = null;
+  let observedStart = null;
+  for (const row of samples) {
+    const captureKnown = row.capturedAt != null ? time(row.capturedAt) !== null
+      : row.capturedAt === undefined && row.timeQuality !== "unknown";
+    const doorState = !captureKnown ? null : row.doorOpen === true ? 1 : row.doorOpen === false ? 0 : null;
+    const gap = previous && row.time - previous.time > maxGapMs;
+    // A long gap or an unknown capture time cannot establish a continuous state.
+    if (gap) points.push({ time: previous.time + 1, doorState: null });
+    if (doorState !== 1) observedStart = null;
+    else if (!previous || previous.doorState !== 1 || gap) observedStart = row.time;
+    const opening = doorState === 1 ? [...periods].reverse().find(item => item.openedAt !== null && item.openedAt <= row.time &&
+      (!item.completed || (item.closedAt !== null && item.closedAt >= row.time))) : null;
+    const point = { time: row.time, doorState, opening: opening ?? null, observedSeconds: doorState === 1 ? (row.time - observedStart) / 1000 : null };
+    points.push(point);
+    previous = point;
+  }
+  return points;
+}

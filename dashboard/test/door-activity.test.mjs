@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeDoorPeriods, summarizeDoorPeriods, doorTimeline, doorTime } from "../src/doorActivity.js";
+import { normalizeDoorPeriods, summarizeDoorPeriods, doorTimeline, doorTime, newestHistoryFirst, doorStateRows } from "../src/doorActivity.js";
 
 const base = Date.parse("2026-10-16T12:00:00Z");
 const at = seconds => new Date(base + seconds * 1000).toISOString();
@@ -78,4 +78,39 @@ test("guards empty input/windows and formats the fixed IST timezone", () => {
   assert.equal(summarizeDoorPeriods([]).totalSeconds, 0);
   assert.deepEqual(doorTimeline([], null, null), []);
   assert.match(doorTime(base), /17:30:00/);
+});
+
+test("shows the newest table readings first without reversing chart input", () => {
+  const rows = [{ time: base }, { time: base + 10000 }, { time: null }, { time: base + 5000 }];
+  const sorted = newestHistoryFirst(rows);
+  assert.deepEqual(sorted.map(row => row.time), [base + 10000, base + 5000, base, null]);
+  assert.equal(rows[0].time, base);
+});
+
+test("step chart follows actual sample states and attaches recorded opening details", () => {
+  const periods = normalizeDoorPeriods([event("sampled", 5, 15)]);
+  const rows = [false, true, true, false].map((doorOpen, index) => ({ time: base + index * 5000, capturedAt: at(index * 5), doorOpen }));
+  const points = doorStateRows([...rows].reverse(), periods);
+  assert.deepEqual(points.map(point => point.doorState), [0, 1, 1, 0]);
+  assert.equal(points[2].observedSeconds, 5);
+  assert.equal(points[1].opening.durationSeconds, 10);
+  assert.equal(rows[0].doorOpen, false);
+});
+
+test("long gaps break the step line and reset observed-open duration", () => {
+  const points = doorStateRows([
+    { time: base, capturedAt: at(0), doorOpen: true },
+    { time: base + 60000, capturedAt: at(60), doorOpen: true },
+  ]);
+  assert.equal(points.length, 3);
+  assert.equal(points[1].doorState, null);
+  assert.equal(points[2].observedSeconds, 0);
+});
+
+test("unknown capture time and unknown door state never become a false closed state", () => {
+  const points = doorStateRows([
+    { time: base, capturedAt: null, timeQuality: "unknown", doorOpen: false },
+    { time: base + 5000, capturedAt: at(5), doorOpen: null },
+  ]);
+  assert.deepEqual(points.map(point => point.doorState), [null, null]);
 });
