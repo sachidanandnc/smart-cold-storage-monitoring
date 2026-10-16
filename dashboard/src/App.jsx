@@ -4,6 +4,8 @@ import {
 } from "recharts";
 import "./App.css";
 import AnalyticsSection from "./AnalyticsSection";
+import DoorTimeline from "./DoorTimeline";
+import useDoorEvents from "./useDoorEvents";
 import { API_BASE, readHeaders, savedReadKey, saveReadKey } from "./api";
 
 // Keep the existing backend endpoints.
@@ -78,6 +80,7 @@ function validateHistory(payload) {
     readingId: row.readingId,
     temperature: number(row.temperature),
     humidity: number(row.humidity),
+    doorOpen: [true, 1, "true"].includes(row.doorOpen) ? true : [false, 0, "false"].includes(row.doorOpen) ? false : null,
     riskScore: number(row.riskScore),
     riskLevel: typeof row.riskLevel === "string" ? row.riskLevel.trim().toUpperCase() : null,
   })).sort((a, b) => (a.time ?? Infinity) - (b.time ?? Infinity));
@@ -212,6 +215,7 @@ export default function App({ previewMode = false }) {
   const [readKey, setReadKey] = useState(savedReadKey);
   const current = usePolling(API_BASE + "/api/risk/current", validateCurrent, "Unable to connect to the cold-storage backend.", readKey);
   const history = usePolling(API_BASE + "/api/sensor-data/history?limit=" + historyLimit, validateHistory, "Unable to load historical readings.", readKey);
+  const doorEvents = useDoorEvents(readKey);
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), POLL_MS);
     return () => clearInterval(interval);
@@ -245,7 +249,7 @@ export default function App({ previewMode = false }) {
   const doorClosed = sensor?.doorOpen === false || sensor?.doorOpen === 0 || sensor?.doorOpen === "false";
   const deviceId = typeof sensor?.deviceId === "string" && sensor.deviceId.trim() ? sensor.deviceId : "Storage unit";
   const caption = !current.data ? "Waiting for a reading" : stale ? "Last received reading" : "Latest sensor reading";
-  const refreshAll = () => { current.refresh(); history.refresh(); };
+  const refreshAll = () => { current.refresh(); history.refresh(); doorEvents.retry(); };
   const riskTitle = !current.data ? "Awaiting risk assessment" : stale ? "Last recorded assessment" : ({ low: "Low environmental risk", medium: "Conditions need attention", high: "Elevated environmental risk", critical: "Critical environmental risk", unknown: "Risk level unavailable" })[riskClass];
 
   return <div className="cold-app">
@@ -260,7 +264,7 @@ export default function App({ previewMode = false }) {
       <div className="sidebar-bottom"><div className="node-card"><span className="node-icon"><Icon name="server" /></span><p className="node-caption">MONITORED DEVICE</p><strong className="node-id">{deviceId}</strong><div className="node-foot"><span className={"status-dot" + (stale || !current.data ? " is-muted" : "")} />{previewMode ? "Preview device" : "Single storage unit"}</div></div><p className="sidebar-note"><Icon name="snow" size={14} /> Precision in every degree.</p></div>
     </aside>
     <div className="workspace">
-      <header className="topbar"><div className="breadcrumb"><span>Workspace</span><Icon name="arrow" size={13} /><strong>Cold storage</strong></div><div className="topbar-actions">{!previewMode && <DashboardAccess onConnect={key => { if (key === readKey) { current.refresh(); history.refresh(); } else setReadKey(key); }} />}<span className="polling-note"><Icon name="clock" size={14} /> Updates every 5 seconds</span></div></header>
+      <header className="topbar"><div className="breadcrumb"><span>Workspace</span><Icon name="arrow" size={13} /><strong>Cold storage</strong></div><div className="topbar-actions">{!previewMode && <DashboardAccess onConnect={key => { if (key === readKey) { refreshAll(); } else setReadKey(key); }} />}<span className="polling-note"><Icon name="clock" size={14} /> Updates every 5 seconds</span></div></header>
       <main className="dashboard" id="main" tabIndex={-1}>
         <section className="page-heading" id="overview" aria-labelledby="page-title"><div><p className="eyebrow"><span className="status-dot" /> ENVIRONMENTAL MONITORING</p><h1 id="page-title">Storage overview<span>.</span></h1><p className="page-description">A clear view of your storage. Confidence in every reading.</p></div><div className="heading-actions"><span className={"connection-badge" + (stale || !current.data ? " is-muted" : "")} role="status"><span className="status-dot" />{previewMode && current.data ? "Demo data" : connectionLabel}</span><button type="button" className="button refresh-button" onClick={refreshAll} disabled={current.pending && history.pending}><Icon name="refresh" size={16} />Refresh</button></div></section>
 
@@ -289,12 +293,13 @@ export default function App({ previewMode = false }) {
           <div className="chart-grid">
             <HistoryChart title="Temperature" subtitle="Cold storage air temperature" rows={chartRows} dataKey="temperature" unit="°C" color="var(--temperature)" current={sensor?.temperature} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
             <HistoryChart title="Relative humidity" subtitle="Moisture level inside storage" rows={chartRows} dataKey="humidity" unit="%" color="var(--humidity)" current={sensor?.humidity} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
-            <HistoryChart title="Environmental risk" subtitle="Recorded risk scores · 0–100 scale" rows={chartRows} dataKey="riskScore" unit="/100" color="var(--risk-chart)" current={score} wide pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
+            <HistoryChart title="Environmental risk" subtitle="Recorded risk scores · 0–100 scale" rows={chartRows} dataKey="riskScore" unit="/100" color="var(--risk-chart)" current={score} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
+            <DoorTimeline events={doorEvents} rows={chartRows} sensor={sensor} stale={stale} />
           </div>
-          <div className="history-table"><details><summary>View reading data <span>{rows.length} readings</span></summary><div className="table-scroll" tabIndex={0} role="region" aria-label="Sensor readings table"><table><caption>History returned by the backend, oldest first. Times use your browser's timezone. Unknown capture times are shown at server receipt time in charts.</caption><thead><tr><th scope="col">Captured at</th><th scope="col">Server received</th><th scope="col">Delivery</th><th scope="col">Temperature (°C)</th><th scope="col">Humidity (%)</th><th scope="col">Risk (/100)</th><th scope="col">Risk level</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={row.readingId || index}><td>{row.capturedAt ? timeLabel(row.capturedAt, true) : "Unknown (not recorded)"}</td><td>{timeLabel(row.receivedAt, true)}</td><td>{row.historical ? "Backfilled" : row.liveEligible ? "Live" : "Recorded"}</td><td>{format(row.temperature)}</td><td>{format(row.humidity)}</td><td>{format(row.riskScore, 0)}</td><td>{row.riskLevel || "—"}</td></tr>) : <tr><td colSpan={7}>No history readings available.</td></tr>}</tbody></table></div></details></div>
+          <div className="history-table"><details><summary>View reading data <span>{rows.length} readings</span></summary><div className="table-scroll" tabIndex={0} role="region" aria-label="Sensor readings table"><table><caption>History returned by the backend, oldest first. Times use your browser's timezone. Unknown capture times are shown at server receipt time in charts.</caption><thead><tr><th scope="col">Captured at</th><th scope="col">Server received</th><th scope="col">Delivery</th><th scope="col">Temperature (°C)</th><th scope="col">Humidity (%)</th><th scope="col">Door</th><th scope="col">Risk (/100)</th><th scope="col">Risk level</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={row.readingId || index}><td>{row.capturedAt ? timeLabel(row.capturedAt, true) : "Unknown (not recorded)"}</td><td>{timeLabel(row.receivedAt, true)}</td><td>{row.historical ? "Backfilled" : row.liveEligible ? "Live" : "Recorded"}</td><td>{format(row.temperature)}</td><td>{format(row.humidity)}</td><td>{row.doorOpen === true ? "Open" : row.doorOpen === false ? "Closed" : "Unknown"}</td><td>{format(row.riskScore, 0)}</td><td>{row.riskLevel || "—"}</td></tr>) : <tr><td colSpan={8}>No history readings available.</td></tr>}</tbody></table></div></details></div>
         </section>
         <AnalyticsSection historyData={chartRows} historyLimit={historyLimit}
-          historyPending={history.pending && !history.data} historyError={history.error} readKey={readKey} />
+          historyPending={history.pending && !history.data} historyError={history.error} doorEvents={doorEvents} />
         <footer className="dashboard-footer"><span className="footer-brand"><Icon name="snow" size={16} /> Smart Cold Storage</span><span>Last sensor reading <strong>{timeLabel(sensor?.timestamp, true)}</strong></span></footer>
       </main>
     </div>

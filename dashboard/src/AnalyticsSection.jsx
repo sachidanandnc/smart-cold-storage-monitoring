@@ -1,66 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import {
-  extractDoorEvents, RISK_LEVELS, summarizeDoorEvents, summarizeHistory,
+  RISK_LEVELS, summarizeDoorEvents, summarizeHistory,
 } from "./analytics";
 import "./AnalyticsSection.css";
-import { API_BASE, readHeaders } from "./api";
-
-const DOOR_EVENTS_URL = API_BASE + "/api/door-events";
-const POLL_MS = 5000;
-const REQUEST_TIMEOUT_MS = 10000;
-
-function useDoorEvents(readKey) {
-  const [state, setState] = useState({
-    data: null, error: "", pending: true, lastUpdated: null,
-  });
-  const retryRef = useRef(() => {});
-  useEffect(() => {
-    let disposed = false;
-    let busy = false;
-    let controller = null;
-    let timeout = null;
-    async function load() {
-      if (disposed || busy) return;
-      busy = true;
-      controller = new AbortController();
-      timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-      setState(previous => ({ ...previous, pending: true }));
-      try {
-        const response = await fetch(DOOR_EVENTS_URL, {
-          signal: controller.signal, cache: "no-store", headers: readHeaders(readKey),
-        });
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        const payload = await response.json();
-        if (payload?.success === false) throw new Error("Door events unavailable");
-        const data = extractDoorEvents(payload);
-        if (!disposed) setState({
-          data, error: "", pending: false, lastUpdated: Date.now(),
-        });
-      } catch {
-        if (!disposed) setState(previous => ({
-          ...previous,
-          error: "Door activity could not be refreshed.",
-          pending: false,
-        }));
-      } finally {
-        clearTimeout(timeout);
-        busy = false;
-      }
-    }
-    retryRef.current = load;
-    load();
-    const interval = setInterval(load, POLL_MS);
-    return () => {
-      disposed = true;
-      clearInterval(interval);
-      clearTimeout(timeout);
-      controller?.abort();
-    };
-  }, [readKey]);
-  const retry = useCallback(() => retryRef.current(), []);
-  return { ...state, retry };
-}
-
 function value(number, digits = 1) {
   return number === null || !Number.isFinite(number) ? "—"
     : number.toLocaleString(undefined, {
@@ -101,10 +43,10 @@ function DateRange({ first, last }) {
 }
 
 export default function AnalyticsSection({
-  historyData = [], historyLimit = 50, historyPending = false, historyError = "", readKey = "",
+  historyData = [], historyLimit = 50, historyPending = false, historyError = "", doorEvents,
 }) {
   const stats = useMemo(() => summarizeHistory(Array.isArray(historyData) ? historyData : []), [historyData]);
-  const events = useDoorEvents(readKey);
+  const events = doorEvents;
   const door = useMemo(() => events.data === null ? null : summarizeDoorEvents(events.data), [events.data]);
   const riskColors = {
     LOW: "var(--analytics-low)",
@@ -209,11 +151,12 @@ export default function AnalyticsSection({
           {door?.completedPeriods
             ? door.completedPeriods + " completed opening period(s) had enough data for durations. "
             : "No complete opening period with a usable duration was returned. "}
-          Durations exclude an opening still in progress.
-          {door?.unmatchedOpen && " An OPEN event has no matching CLOSED event in the returned records."}
+          Durations exclude openings without a confirmed close.
+          {door?.uncertainPeriods > 0 && ` ${door.uncertainPeriods} uncertain duration(s) excluded.`}
+          {door?.unmatchedOpen && " An opening has no recorded close time."}
         </p>
         <p className="analytics-cap-note">
-          The endpoint returns at most 100 recent events. Earlier openings and durations are outside this view; an opening near the cutoff may have no matching close event.
+          Latest 100 event records, independent of the sensor history window. Each record includes its opening and closing times, when available.
         </p>
       </article>
     </div>
