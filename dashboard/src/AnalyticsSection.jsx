@@ -1,14 +1,15 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   extractDoorEvents, RISK_LEVELS, summarizeDoorEvents, summarizeHistory,
 } from "./analytics";
 import "./AnalyticsSection.css";
+import { API_BASE, readHeaders } from "./api";
 
-const DOOR_EVENTS_URL = "http://localhost:5000/api/door-events";
+const DOOR_EVENTS_URL = API_BASE + "/api/door-events";
 const POLL_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10000;
 
-function useDoorEvents() {
+function useDoorEvents(readKey) {
   const [state, setState] = useState({
     data: null, error: "", pending: true, lastUpdated: null,
   });
@@ -26,7 +27,7 @@ function useDoorEvents() {
       setState(previous => ({ ...previous, pending: true }));
       try {
         const response = await fetch(DOOR_EVENTS_URL, {
-          signal: controller.signal, cache: "no-store",
+          signal: controller.signal, cache: "no-store", headers: readHeaders(readKey),
         });
         if (!response.ok) throw new Error("HTTP " + response.status);
         const payload = await response.json();
@@ -55,7 +56,7 @@ function useDoorEvents() {
       clearTimeout(timeout);
       controller?.abort();
     };
-  }, []);
+  }, [readKey]);
   const retry = useCallback(() => retryRef.current(), []);
   return { ...state, retry };
 }
@@ -100,11 +101,10 @@ function DateRange({ first, last }) {
 }
 
 export default function AnalyticsSection({
-  historyData = [], historyLimit = 50, historyPending = false, historyError = "",
+  historyData = [], historyLimit = 50, historyPending = false, historyError = "", readKey = "",
 }) {
-  const readings = Array.isArray(historyData) ? historyData : [];
-  const stats = useMemo(() => summarizeHistory(readings), [historyData]);
-  const events = useDoorEvents();
+  const stats = useMemo(() => summarizeHistory(Array.isArray(historyData) ? historyData : []), [historyData]);
+  const events = useDoorEvents(readKey);
   const door = useMemo(() => events.data === null ? null : summarizeDoorEvents(events.data), [events.data]);
   const riskColors = {
     LOW: "var(--analytics-low)",

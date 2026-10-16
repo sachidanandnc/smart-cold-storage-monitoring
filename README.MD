@@ -6,7 +6,9 @@ Smart Cold Storage Monitoring is a full-stack IoT solution designed to monitor t
 
 The system helps operators identify unfavorable storage conditions, monitor environmental trends, and review historical events from a centralized interface.
 
-**Project Status:** Core system operational | Offline synchronization under validation
+**Project Status:** Core system operational | Phase 22 cloud deployment preparation
+
+See [Phase 22 deployment guide](DEPLOYMENT.md) for the Render, Atlas, dashboard, and ESP8266 setup. The backend keeps a rolling history on Atlas Free: when cluster data and indexes reach the configured high watermark, it removes the oldest completed records to make room for new ones.
 
 ## ✨ Key Features
 
@@ -103,7 +105,7 @@ The system uses a layered IoT architecture.
   │       LCD1602 Display          │
   └────────────┼───────────────────┘
                │
-               │ Wi-Fi / HTTP
+               │ Wi-Fi / verified HTTPS in cloud mode
                ▼
   ┌────────────────────────────────┐
   │       Node.js + Express        │
