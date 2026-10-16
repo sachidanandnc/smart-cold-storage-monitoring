@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeDoorPeriods, summarizeDoorPeriods, doorTimeline, doorTime, newestHistoryFirst, doorStateRows } from "../src/doorActivity.js";
+import { normalizeDoorPeriods, summarizeDoorPeriods, doorTimeline, doorTime, newestHistoryFirst, doorStateRows, doorDurationRows } from "../src/doorActivity.js";
 
 const base = Date.parse("2026-10-16T12:00:00Z");
 const at = seconds => new Date(base + seconds * 1000).toISOString();
@@ -113,4 +113,37 @@ test("unknown capture time and unknown door state never become a false closed st
     { time: base + 5000, capturedAt: at(5), doorOpen: null },
   ]);
   assert.deepEqual(points.map(point => point.doorState), [null, null]);
+});
+
+test("duration rises through 5s, 10s and 15s, then resets at the real closing time", () => {
+  const periods = normalizeDoorPeriods([event("duration", 5, 20)]);
+  const rows = [false, true, true, true, false].map((doorOpen, index) => ({ time: base + index * 5000, capturedAt: at(index * 5), doorOpen }));
+  const points = doorDurationRows(rows, periods);
+  assert.equal(points.find(point => point.time === base + 10000).openSeconds, 5);
+  assert.equal(points.find(point => point.time === base + 15000).openSeconds, 10);
+  const atClose = points.filter(point => point.time === base + 20000);
+  assert.equal(atClose[0].openSeconds, 15);
+  assert.equal(atClose[0].boundary, "close");
+  assert.equal(atClose.at(-1).openSeconds, 0);
+  assert.equal(points.at(-1).time, base + 20000);
+});
+
+test("missing opening records yield explicitly estimated sample durations", () => {
+  const points = doorDurationRows([0, 5, 10].map(offset => ({ time: base + offset * 1000, capturedAt: at(offset), doorOpen: true })));
+  assert.deepEqual(points.map(point => point.openSeconds), [0, 5, 10]);
+  assert.ok(points.every(point => point.estimated));
+});
+
+test("uncertain opening durations and unknown capture times are not plotted as exact seconds", () => {
+  const periods = normalizeDoorPeriods([event("gap", 0, 20, { durationUncertain: true })]);
+  const rows = [0, 5].map(offset => ({ time: base + offset * 1000, capturedAt: at(offset), doorOpen: true }));
+  assert.ok(doorDurationRows(rows, periods).every(point => point.openSeconds === null));
+  assert.equal(doorDurationRows([{ time: base, capturedAt: null, doorOpen: false }])[0].openSeconds, null);
+});
+
+test("an unclosed opening stops at the last captured reading rather than wall-clock now", () => {
+  const periods = normalizeDoorPeriods([event("unclosed", -5, null)]);
+  const points = doorDurationRows([0, 5].map(offset => ({ time: base + offset * 1000, capturedAt: at(offset), doorOpen: true })), periods);
+  assert.deepEqual(points.map(point => point.openSeconds), [5, 10]);
+  assert.equal(points.at(-1).time, base + 5000);
 });

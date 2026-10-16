@@ -181,7 +181,7 @@ function HistoryChart({ title, subtitle, rows, dataKey, unit, color, current, wi
 }
 
 export default function App({ previewMode = false }) {
-  const [historyLimit, setHistoryLimit] = useState(50);
+  const [historyLimit, setHistoryLimit] = useState(100);
   const [now, setNow] = useState(Date.now);
   const [activeSection, setActiveSection] = useState("overview");
   const current = usePolling(API_BASE + "/api/risk/current", validateCurrent, "Unable to connect to the cold-storage backend.");
@@ -258,7 +258,7 @@ export default function App({ previewMode = false }) {
         </section>
 
         <section className="history-section" id="history" aria-labelledby="history-title">
-          <div className="section-header"><div><p className="eyebrow">THE BIGGER PICTURE</p><h2 id="history-title">Environmental trends</h2><p>Your recent readings, with the detail that matters.</p></div><div className="history-controls"><label htmlFor="history-limit">History window</label><select id="history-limit" value={historyLimit} onChange={event => setHistoryLimit(Number(event.target.value))}>{[25, 50, 100, 250, 500].map(limit => <option value={limit} key={limit}>Last {limit} readings</option>)}</select></div></div>
+          <div className="section-header"><div><p className="eyebrow">THE BIGGER PICTURE</p><h2 id="history-title">Environmental trends</h2><p>Your recent readings, with the detail that matters.</p></div><div className="history-controls"><label htmlFor="history-limit">History window</label><select id="history-limit" value={historyLimit} onChange={event => setHistoryLimit(Number(event.target.value))}>{[25, 50, 100, 250, 500, 1000].map(limit => <option value={limit} key={limit}>Last {limit} readings</option>)}</select></div></div>
           {history.error && <div className="notice notice-warning"><Icon name="warning" /><div role="alert"><strong>{history.error}</strong><p>{rows.length ? "Charts show the last successful history response." : "Current sensor readings are shown independently."}</p></div><button className="button" type="button" disabled={history.pending} onClick={history.refresh}>{history.pending ? "Retrying…" : "Retry history"}</button></div>}
           <p className="chart-summary">Offline readings appear here as they reach the server. If the device clock was unavailable, the chart uses server receipt time; the table marks the capture time as unknown. Live cards wait for a fresh reading. Oldest stored history is removed when the free database approaches its storage limit.</p>
           {rows.length > chartRows.length && <p className="chart-summary">{rows.length - chartRows.length} reading(s) have an invalid timestamp and appear only in the data table.</p>}

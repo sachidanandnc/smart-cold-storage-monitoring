@@ -134,3 +134,32 @@ export function doorStateRows(rows, periods = [], maxGapMs = 15000) {
   }
   return points;
 }
+
+export function doorDurationRows(rows, periods = []) {
+  const sampled = doorStateRows(rows, periods);
+  const points = sampled.map(point => ({
+    ...point,
+    openSeconds: point.doorState === null || point.opening?.uncertain ? null
+      : point.doorState === 0 ? 0
+        : point.opening ? (point.time - point.opening.openedAt) / 1000 : point.observedSeconds,
+    estimated: point.doorState === 1 && !point.opening,
+    order: 2,
+  }));
+  if (!sampled.length) return points;
+  const first = sampled[0].time;
+  const last = sampled.at(-1).time;
+  const observedKeys = new Set(sampled.filter(point => point.doorState === 1 && point.opening).map(point => point.opening.key));
+  for (const opening of periods) {
+    if (!opening.completed || opening.uncertain || !observedKeys.has(opening.key)) continue;
+    if (opening.openedAt >= first && opening.openedAt <= last) {
+      points.push({ time: opening.openedAt, openSeconds: 0, doorState: 1, opening, estimated: false, order: 0 });
+    }
+    if (opening.closedAt >= first && opening.closedAt <= last) {
+      // Keep the completed duration visible immediately before its reset.
+      // Both points use the actual closing timestamp, not an invented later time.
+      points.push({ time: opening.closedAt, openSeconds: opening.durationSeconds, doorState: 0, opening, estimated: false, boundary: "close", order: 1 });
+      points.push({ time: opening.closedAt, openSeconds: 0, doorState: 0, opening, estimated: false, order: 3 });
+    }
+  }
+  return points.sort((a, b) => a.time - b.time || a.order - b.order);
+}

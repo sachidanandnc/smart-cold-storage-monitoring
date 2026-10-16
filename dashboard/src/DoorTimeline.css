@@ -1,7 +1,16 @@
 .cold-app .door-timeline .chart-dot { background: var(--warning); }
+.cold-app .door-timeline .chart-value strong { justify-self: end; }
 .cold-app .door-state-tooltip { max-width: 270px; }
 .cold-app .door-state-tooltip strong { margin-bottom: 7px; }
 .cold-app .door-state-tooltip > span { margin-bottom: 4px; line-height: 1.5; }
 .cold-app .door-state-tooltip > span:last-child { margin-bottom: 0; }
 .cold-app .door-timeline-note { margin: 0 23px 12px; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
 .cold-app .door-timeline-note button { border: 0; padding: 0 4px; background: transparent; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+.cold-app .door-opening-periods { border-top: 1px solid var(--line); }
+.cold-app .door-opening-periods summary { padding: 12px 23px; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.cold-app .door-opening-periods summary > span { float: right; color: var(--text-muted); }
+.cold-app .door-opening-periods .table-scroll { max-height: 220px; }
+.cold-app .door-opening-periods table { width: 100%; border-collapse: collapse; color: var(--text-secondary); font-size: 10px; }
+.cold-app .door-opening-periods caption { padding: 8px 20px; text-align: left; font-size: 10px; }
+.cold-app .door-opening-periods th, .cold-app .door-opening-periods td { padding: 9px 20px; border-top: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.cold-app .door-opening-periods th { background: var(--surface-soft); font-weight: 600; }
