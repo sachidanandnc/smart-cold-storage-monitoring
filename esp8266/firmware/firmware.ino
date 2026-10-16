@@ -1,6 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecureBearSSL.h>
 #include <LittleFS.h>
 #include <DHT.h>
 #include <LiquidCrystal.h>
@@ -17,7 +18,15 @@
 // ==================================================
 const char* WIFI_SSID = MY_WIFI_SSID;
 const char* WIFI_PASSWORD = MY_WIFI_PASSWORD;
+#ifdef CLOUD_API_HOST
+#if !defined(DEVICE_API_KEY) || !defined(SERVER_ROOT_CA)
+#error "Cloud uploads require DEVICE_API_KEY and SERVER_ROOT_CA in private wifi.h"
+#endif
+const String SERVER_URL = "https://" + String(CLOUD_API_HOST) + "/api/sensor-data";
+#else
+// Local development remains available with the existing private wifi.h.
 const String SERVER_URL = "http://" + String(SERVER_IP) + ":" + String(SERVER_PORT) + "/api/sensor-data";
+#endif
 const char* DEVICE_ID = "cold-storage-01";
 
 // ==================================================
@@ -609,14 +618,29 @@ void uploadOldest() {
     }
   }
   const String expectedId = payload["readingId"].as<String>();
+#ifdef CLOUD_API_HOST
+  // Certificate dates cannot be verified until NTP has synchronized.
+  if (!hasValidClock()) {
+    Serial.println("Waiting for NTP before verified HTTPS upload; queue retained");
+    deferUploadAfterFailure();
+    return;
+  }
+  BearSSL::X509List trustAnchors(SERVER_ROOT_CA);
+  BearSSL::WiFiClientSecure client;
+  client.setTrustAnchors(&trustAnchors);
+#else
   WiFiClient client;
+#endif
   HTTPClient http;
   if (!http.begin(client, SERVER_URL)) {
     deferUploadAfterFailure();
     return;
   }
-  http.setTimeout(2500);
+  http.setTimeout(8000);
   http.addHeader("Content-Type", "application/json");
+#ifdef CLOUD_API_HOST
+  http.addHeader("X-Device-Key", DEVICE_API_KEY);
+#endif
   bool isRetry = payload["attempted"].as<bool>();
   if (isRetry) http.addHeader("X-Queue-Retry", "true");
   if (!isRetry) {

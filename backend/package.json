@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js",
-    "test": "node test-phase21.js"
+    "storage": "node check-storage.js",
+    "test": "node test-phase21.js && node test-deployment.js && node test-storage.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

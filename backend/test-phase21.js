@@ -14,6 +14,7 @@ const doorRows = [];
 
 function express() {
   return {
+    set() {},
     use() {},
     get(url, handler) { routes.set(`GET ${url}`, handler); },
     post(url, handler) { routes.set(`POST ${url}`, handler); },
@@ -88,7 +89,8 @@ function fakeRequire(name) {
   if (name === 'cors') return () => () => {};
   if (name === 'mongoose') return mongoose;
   if (name === 'dotenv') return { config() {} };
-  if (name === 'node:crypto') return { randomUUID: () => 'test-token' };
+  if (name === 'node:crypto') return { randomUUID: () => 'test-token', timingSafeEqual: () => true };
+  if (name === './storage-maintenance') return require('./storage-maintenance');
   throw new Error(name);
 }
 const moduleObject = { exports: {} };
@@ -100,6 +102,7 @@ const context = {
     DOOR_WARNING_SECONDS: '30', DOOR_CRITICAL_SECONDS: '120',
   } },
   console,
+  Buffer,
 };
 vm.runInNewContext(source, context, { filename: 'server.js' });
 assert.match(

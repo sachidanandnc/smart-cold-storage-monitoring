@@ -1,12 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import "./App.css";
 import AnalyticsSection from "./AnalyticsSection";
+import { API_BASE, readHeaders, savedReadKey, saveReadKey } from "./api";
 
 // Keep the existing backend endpoints.
-const API_BASE = "http://localhost:5000";
 const POLL_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10000;
 // This is a UI freshness indicator, not a storage safety threshold.
@@ -85,7 +85,7 @@ function validateHistory(payload) {
 
 // Each endpoint polls independently. Slow requests never overlap; cleanup
 // cancels in-flight requests, including when the history limit changes.
-function usePolling(url, validate, errorMessage) {
+function usePolling(url, validate, errorMessage, readKey) {
   const [state, setState] = useState({ url, data: null, error: "", pending: true });
   const refreshRef = useRef(() => {});
   useEffect(() => {
@@ -101,12 +101,13 @@ function usePolling(url, validate, errorMessage) {
       timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       setState(previous => ({ ...previous, pending: true }));
       try {
-        const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
+        const response = await fetch(url, { signal: controller.signal, cache: "no-store", headers: readHeaders(readKey) });
+        if (response.status === 401) throw new Error("Access key required or incorrect.");
         if (!response.ok) throw new Error("HTTP " + response.status);
         const data = validate(await response.json());
         if (!disposed) setState({ url, data, error: "", pending: false });
-      } catch {
-        if (!disposed) setState(previous => ({ ...previous, error: errorMessage, pending: false }));
+      } catch (error) {
+        if (!disposed) setState(previous => ({ ...previous, error: error?.message === "Access key required or incorrect." ? error.message : errorMessage, pending: false }));
       } finally {
         clearTimeout(timeout);
         busy = false;
@@ -121,7 +122,7 @@ function usePolling(url, validate, errorMessage) {
       clearTimeout(timeout);
       controller?.abort();
     };
-  }, [url, validate, errorMessage]);
+  }, [url, validate, errorMessage, readKey]);
   const refresh = useCallback(() => refreshRef.current(), []);
   return { ...(state.url === url ? state : { data: null, error: "", pending: true }), refresh };
 }
@@ -180,8 +181,10 @@ export default function App({ previewMode = false }) {
   const [historyLimit, setHistoryLimit] = useState(50);
   const [now, setNow] = useState(Date.now);
   const [activeSection, setActiveSection] = useState("overview");
-  const current = usePolling(API_BASE + "/api/risk/current", validateCurrent, "Unable to connect to the cold-storage backend.");
-  const history = usePolling(API_BASE + "/api/sensor-data/history?limit=" + historyLimit, validateHistory, "Unable to load historical readings.");
+  const [readKey, setReadKey] = useState(savedReadKey);
+  const [enteredKey, setEnteredKey] = useState("");
+  const current = usePolling(API_BASE + "/api/risk/current", validateCurrent, "Unable to connect to the cold-storage backend.", readKey);
+  const history = usePolling(API_BASE + "/api/sensor-data/history?limit=" + historyLimit, validateHistory, "Unable to load historical readings.", readKey);
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), POLL_MS);
     return () => clearInterval(interval);
@@ -205,7 +208,7 @@ export default function App({ previewMode = false }) {
   const score = number(risk?.score);
   const reasons = Array.isArray(risk?.reasons) ? risk.reasons.filter(reason => typeof reason === "string" && reason.trim()) : [];
   const rows = history.data || [];
-  const chartRows = useMemo(() => rows.filter(row => row.time !== null), [history.data]);
+  const chartRows = useMemo(() => (history.data || []).filter(row => row.time !== null), [history.data]);
   const readingTime = timeValue(sensor?.timestamp);
   const delayed = current.data && (readingTime === null || now - readingTime > READING_DELAY_MS || readingTime - now > READING_DELAY_MS);
   const stale = Boolean(current.error || delayed);
@@ -235,6 +238,7 @@ export default function App({ previewMode = false }) {
         <section className="page-heading" id="overview" aria-labelledby="page-title"><div><p className="eyebrow"><span className="status-dot" /> ENVIRONMENTAL MONITORING</p><h1 id="page-title">Storage overview<span>.</span></h1><p className="page-description">A clear view of your storage. Confidence in every reading.</p></div><div className="heading-actions"><span className={"connection-badge" + (stale || !current.data ? " is-muted" : "")} role="status"><span className="status-dot" />{previewMode && current.data ? "Demo data" : connectionLabel}</span><button type="button" className="button refresh-button" onClick={refreshAll} disabled={current.pending && history.pending}><Icon name="refresh" size={16} />Refresh</button></div></section>
 
         {previewMode && <div className="notice notice-info"><Icon name="grid" /><div><strong>Design preview</strong><p>Illustrative sensor data. Your replacement App.jsx connects to your existing backend.</p></div></div>}
+        {current.error === "Access key required or incorrect." && <form className="notice notice-warning access-key-form" onSubmit={event => { event.preventDefault(); const key = enteredKey.trim(); saveReadKey(key); setReadKey(key); setEnteredKey(""); }}><Icon name="shield" /><div><label htmlFor="dashboard-key"><strong>Dashboard access key</strong></label><p>Enter the read key configured on the backend. It stays in this browser tab's session storage.</p><input id="dashboard-key" type="password" autoComplete="off" value={enteredKey} onChange={event => setEnteredKey(event.target.value)} required /></div><button className="button" type="submit">Connect</button></form>}
         {current.error && <div className="notice notice-error"><Icon name="warning" /><div role="alert"><strong>{current.data ? "Connection interrupted · readings may be out of date" : "Unable to reach cold storage"}</strong><p>{current.error} {current.data ? "Showing the last successful readings. Reconnecting automatically." : "Automatic retries continue every 5 seconds."}</p></div><button type="button" className="button" disabled={current.pending} onClick={current.refresh}>{current.pending ? "Retrying…" : "Retry connection"}</button></div>}
         {delayed && !current.error && <div className="notice notice-warning" role="status"><Icon name="clock" /><div><strong>Sensor reading is delayed</strong><p>The backend is reachable, but the reading timestamp is missing, outside the last 30 seconds, or ahead of this device's clock. Last reading: {timeLabel(sensor?.timestamp, true)}.</p></div></div>}
         {loading && <p className="loading-label" role="status">Connecting to cold storage…</p>}
@@ -255,7 +259,7 @@ export default function App({ previewMode = false }) {
         <section className="history-section" id="history" aria-labelledby="history-title">
           <div className="section-header"><div><p className="eyebrow">THE BIGGER PICTURE</p><h2 id="history-title">Environmental trends</h2><p>Your recent readings, with the detail that matters.</p></div><div className="history-controls"><label htmlFor="history-limit">History window</label><select id="history-limit" value={historyLimit} onChange={event => setHistoryLimit(Number(event.target.value))}>{[25, 50, 100, 250, 500].map(limit => <option value={limit} key={limit}>Last {limit} readings</option>)}</select></div></div>
           {history.error && <div className="notice notice-warning"><Icon name="warning" /><div role="alert"><strong>{history.error}</strong><p>{rows.length ? "Charts show the last successful history response." : "Current sensor readings are shown independently."}</p></div><button className="button" type="button" disabled={history.pending} onClick={history.refresh}>{history.pending ? "Retrying…" : "Retry history"}</button></div>}
-          <p className="chart-summary">Offline readings appear here as they reach the server. If the device clock was unavailable, the chart uses server receipt time; the table marks the capture time as unknown. Live cards wait for a fresh reading.</p>
+          <p className="chart-summary">Offline readings appear here as they reach the server. If the device clock was unavailable, the chart uses server receipt time; the table marks the capture time as unknown. Live cards wait for a fresh reading. Oldest stored history is removed when the free database approaches its storage limit.</p>
           {rows.length > chartRows.length && <p className="chart-summary">{rows.length - chartRows.length} reading(s) have an invalid timestamp and appear only in the data table.</p>}
           <div className="chart-grid">
             <HistoryChart title="Temperature" subtitle="Cold storage air temperature" rows={chartRows} dataKey="temperature" unit="°C" color="var(--temperature)" current={sensor?.temperature} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
@@ -265,7 +269,7 @@ export default function App({ previewMode = false }) {
           <div className="history-table"><details><summary>View reading data <span>{rows.length} readings</span></summary><div className="table-scroll" tabIndex={0} role="region" aria-label="Sensor readings table"><table><caption>History returned by the backend, oldest first. Times use your browser's timezone. Unknown capture times are shown at server receipt time in charts.</caption><thead><tr><th scope="col">Captured at</th><th scope="col">Server received</th><th scope="col">Delivery</th><th scope="col">Temperature (°C)</th><th scope="col">Humidity (%)</th><th scope="col">Risk (/100)</th><th scope="col">Risk level</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={row.readingId || index}><td>{row.capturedAt ? timeLabel(row.capturedAt, true) : "Unknown (not recorded)"}</td><td>{timeLabel(row.receivedAt, true)}</td><td>{row.historical ? "Backfilled" : row.liveEligible ? "Live" : "Recorded"}</td><td>{format(row.temperature)}</td><td>{format(row.humidity)}</td><td>{format(row.riskScore, 0)}</td><td>{row.riskLevel || "—"}</td></tr>) : <tr><td colSpan={7}>No history readings available.</td></tr>}</tbody></table></div></details></div>
         </section>
         <AnalyticsSection historyData={chartRows} historyLimit={historyLimit}
-          historyPending={history.pending && !history.data} historyError={history.error} />
+          historyPending={history.pending && !history.data} historyError={history.error} readKey={readKey} />
         <footer className="dashboard-footer"><span className="footer-brand"><Icon name="snow" size={16} /> Smart Cold Storage</span><span>Last sensor reading <strong>{timeLabel(sensor?.timestamp, true)}</strong></span></footer>
       </main>
     </div>

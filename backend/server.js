@@ -4,7 +4,8 @@
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, timingSafeEqual } = require("node:crypto");
+const { createStorageMaintainer, storageLimitMiB } = require("./storage-maintenance");
 require("dotenv").config();
 // ==========================================
 // Application Configuration
@@ -13,9 +14,56 @@ const app = express();
 // ==========================================
 // Middleware
 // ==========================================
-app.use(cors());
+app.set("trust proxy", 1);
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173")
+  .split(",").map((origin) => origin.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    // ESP8266 and command-line requests have no browser Origin header.
+    callback(null, !origin || allowedOrigins.includes(origin));
+  },
+}));
 app.use(express.json({ limit: "8kb" }));
 const PORT = process.env.PORT || 5000;
+function matchesSecret(provided, expected) {
+  if (!expected || typeof provided !== "string") return false;
+  const actual = Buffer.from(provided);
+  const configured = Buffer.from(expected);
+  return actual.length === configured.length && timingSafeEqual(actual, configured);
+}
+app.use((req, res, next) => {
+  if (req.method === "GET" && req.path.startsWith("/api/") &&
+      process.env.DASHBOARD_READ_KEY &&
+      !matchesSecret(req.get?.("X-Dashboard-Key"), process.env.DASHBOARD_READ_KEY)) {
+    return res.status(401).json({ success: false, message: "Dashboard access key required" });
+  }
+  next();
+});
+// A generous upload cap permits fast replay of the bounded offline queue.
+const requestWindows = new Map();
+app.use((req, res, next) => {
+  const upload = req.method === "POST" && req.path === "/api/sensor-data";
+  const read = req.method === "GET" && req.path.startsWith("/api/");
+  if (!upload && !read) return next();
+  const now = Date.now();
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  const key = `${upload ? "upload" : "read"}:${ip}`;
+  const window = requestWindows.get(key);
+  const current = !window || now - window.started >= 60000
+    ? { started: now, count: 0 } : window;
+  current.count += 1;
+  requestWindows.set(key, current);
+  if (requestWindows.size > 1000) {
+    for (const [address, value] of requestWindows) {
+      if (now - value.started >= 60000) requestWindows.delete(address);
+    }
+    if (requestWindows.size > 1000) requestWindows.delete(requestWindows.keys().next().value);
+  }
+  if (current.count > (upload ? 900 : 180)) {
+    return res.status(429).json({ success: false, message: "Request rate limit reached" });
+  }
+  next();
+});
 // Keep MongoDB dates in UTC. Only console output is localized for operators.
 const istClock = new Intl.DateTimeFormat("en-IN", {
   timeZone: "Asia/Kolkata",
@@ -39,6 +87,11 @@ const HUMIDITY_MIN = Number(process.env.HUMIDITY_MIN);
 const HUMIDITY_MAX = Number(process.env.HUMIDITY_MAX);
 const DOOR_WARNING_SECONDS = Number(process.env.DOOR_WARNING_SECONDS);
 const DOOR_CRITICAL_SECONDS = Number(process.env.DOOR_CRITICAL_SECONDS);
+const STORAGE_HIGH_WATER_MIB = storageLimitMiB(process.env.STORAGE_HIGH_WATER_MIB, 420);
+const STORAGE_LOW_WATER_MIB = storageLimitMiB(process.env.STORAGE_LOW_WATER_MIB, 380);
+if (STORAGE_HIGH_WATER_MIB > 470 || STORAGE_LOW_WATER_MIB >= STORAGE_HIGH_WATER_MIB) {
+  throw new Error("Storage watermarks must leave room below the 512 MiB Atlas Free limit");
+}
 // Validate threshold configuration
 if (
   Number.isNaN(TEMP_MIN) ||
@@ -844,6 +897,10 @@ app.get("/", (req, res) => {
 // Used by ESP8266
 // ==========================================
 app.post("/api/sensor-data", async (req, res) => {
+  if (process.env.DEVICE_API_KEY &&
+      !matchesSecret(req.get?.("X-Device-Key"), process.env.DEVICE_API_KEY)) {
+    return res.status(401).json({ success: false, message: "Invalid device key" });
+  }
   const receivedAt = new Date();
   const queueRetry = req.get?.("X-Queue-Retry") === "true";
   let incoming;
@@ -855,6 +912,9 @@ app.post("/api/sensor-data", async (req, res) => {
     );
   } catch (error) {
     return res.status(400).json({ success: false, message: error.message });
+  }
+  if (process.env.DEVICE_ID && incoming.deviceId !== process.env.DEVICE_ID) {
+    return res.status(403).json({ success: false, message: "Device not allowed" });
   }
 
   try {
@@ -966,6 +1026,10 @@ app.post("/api/sensor-data", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Error saving sensor data:", error.message);
+    if (error.code === 8000 || /over your space quota|storage quota|quota exceeded/i.test(error.message)) {
+      void trimOldestReadings();
+      return res.status(503).json({ success: false, message: "Database storage full; retry after oldest readings are removed" });
+    }
     return res.status(500).json({
       success: false,
       message: "Failed to persist/process reading",
@@ -983,6 +1047,15 @@ const currentFilter = {
     { liveEligible: { $exists: false } },
   ],
 };
+const trimOldestReadings = createStorageMaintainer({
+  connection: mongoose.connection,
+  SensorData,
+  Alert,
+  DoorEvent,
+  latestFilter: currentFilter,
+  highMiB: STORAGE_HIGH_WATER_MIB,
+  lowMiB: STORAGE_LOW_WATER_MIB,
+});
 
 app.get("/api/sensor-data/latest", async (req, res) => {
   try {
@@ -1137,9 +1210,24 @@ async function startServer() {
   if (!process.env.MONGODB_URI) {
     throw new Error("MONGODB_URI is required");
   }
+  if (process.env.NODE_ENV === "production") {
+    if (!process.env.DEVICE_API_KEY || process.env.DEVICE_API_KEY.length < 32) {
+      throw new Error("DEVICE_API_KEY must contain at least 32 characters in production");
+    }
+    if (!process.env.CORS_ORIGIN) {
+      throw new Error("CORS_ORIGIN is required in production");
+    }
+    if (!process.env.DASHBOARD_READ_KEY || process.env.DASHBOARD_READ_KEY.length < 32) {
+      throw new Error("DASHBOARD_READ_KEY must contain at least 32 characters in production");
+    }
+  }
   await connectDatabase();
   // Do not accept a reading until the unique readingId index is ready.
   await SensorData.init();
+  // Clean proactively; waiting for Atlas's hard quota would reject uploads.
+  void trimOldestReadings();
+  const storageTimer = setInterval(trimOldestReadings, 30000);
+  storageTimer.unref();
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server listening on port ${PORT}`);
     console.log("\n📊 Alert Thresholds");
