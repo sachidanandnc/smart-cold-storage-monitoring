@@ -10,7 +10,14 @@
 #include <math.h>
 #include <string.h>
 #include <time.h>
+#include <Schedule.h>
 #include "wifi.h"
+
+// Set to 1 only while troubleshooting. Routine sensor/JSON/boot logs are off.
+#ifndef SERIAL_VERBOSE
+#define SERIAL_VERBOSE 0
+#endif
+#define DETAIL_SERIAL if (SERIAL_VERBOSE) Serial
 
 const char* WIFI_SSID = MY_WIFI_SSID;
 const char* WIFI_PASSWORD = MY_WIFI_PASSWORD;
@@ -42,7 +49,7 @@ DHT dht(DHT_PIN, DHT_TYPE);
 const int DOOR_THRESHOLD = 500;
 
 #define BUTTON_PIN D0
-const uint32_t DEBOUNCE_DELAY_MS = 50;
+const uint32_t DEBOUNCE_DELAY_MS = 35;
 const uint32_t DOOR_POLL_MS = 50;
 
 // LCD: RS, Enable, D4, D5, D6, D7
@@ -51,7 +58,7 @@ LiquidCrystal lcd(D1, D2, D4, D3, D6, D7);
 const uint32_t READING_INTERVAL_MS = 5000;
 const uint32_t WIFI_RETRY_MS = 90000;
 const uint32_t WIFI_STATUS_REPORT_MS = 15000;
-const uint32_t UPLOAD_SUCCESS_GAP_MS = 250;
+const uint32_t UPLOAD_SUCCESS_GAP_MS = 100;
 const uint32_t UPLOAD_RETRY_MS = 1500;
 const uint32_t MAX_UPLOAD_BACKOFF_MS = 60000;
 const uint32_t NTP_GRACE_MS = 15000;
@@ -73,6 +80,11 @@ float currentTemperature = 0;
 float currentHumidity = 0;
 int currentScreen = 0;
 const uint8_t LCD_SCREEN_COUNT = 5;
+char lcdPages[LCD_SCREEN_COUNT][2][17] = {};
+char desiredLcdRows[2][17] = {{0}, {0}};
+uint8_t lcdScanPosition = 0;
+bool lcdServiceReady = false;
+String latestQueuedPath;
 
 bool lastButtonState = LOW;
 bool stableButtonState = LOW;
@@ -248,6 +260,7 @@ uint16_t queueCount() {
 
   while (dir.next()) {
     if (normalizedPath(dir.fileName()).endsWith(".json")) count++;
+    yield(); // Keep the LCD/button service running during large directory scans.
   }
 
   return count;
@@ -264,6 +277,7 @@ String oldestQueuePathExcept(const String& protectedPath) {
         (oldest.length() == 0 || path < oldest)) {
       oldest = path;
     }
+    yield();
   }
 
   return oldest;
@@ -271,6 +285,13 @@ String oldestQueuePathExcept(const String& protectedPath) {
 
 String oldestQueuePath() {
   return oldestQueuePathExcept(String());
+}
+
+String nextUploadPath() {
+  if (latestQueuedPath.length() && LittleFS.exists(latestQueuedPath)) {
+    return latestQueuedPath;
+  }
+  return oldestQueuePath();
 }
 
 bool evictQueuedReadingExcept(
@@ -492,11 +513,53 @@ void writeLCDRow(uint8_t row, const char* text) {
   if (length > 16) length = 16;
   memcpy(padded, text, length);
 
-  if (strcmp(lcdRows[row], padded) == 0) return;
+  // Stage text only. The cooperative service writes one character at a time.
+  memcpy(desiredLcdRows[row], padded, sizeof(padded));
+}
 
-  lcd.setCursor(0, row);
-  lcd.print(padded);
-  memcpy(lcdRows[row], padded, sizeof(padded));
+void serviceLCD() {
+  // Bounded work, no allocation, filesystem, Serial, delay() or yield().
+  // Safe to run from the core's cooperative callback during HTTPS waits.
+  for (uint8_t checked = 0; checked < 32; checked++) {
+    uint8_t row = lcdScanPosition / 16;
+    uint8_t column = lcdScanPosition % 16;
+    lcdScanPosition = (lcdScanPosition + 1) % 32;
+    if (lcdRows[row][column] == desiredLcdRows[row][column]) continue;
+    lcd.setCursor(column, row);
+    lcd.write((uint8_t)desiredLcdRows[row][column]);
+    lcdRows[row][column] = desiredLcdRows[row][column];
+    return;
+  }
+}
+
+void renderCachedLCDPage() {
+  writeLCDRow(0, lcdPages[currentScreen][0]);
+  writeLCDRow(1, lcdPages[currentScreen][1]);
+}
+
+void refreshLCDPages() {
+  if (sensorDataAvailable) {
+    snprintf(lcdPages[0][0], 17, "Temp: %.1f C", currentTemperature);
+    snprintf(lcdPages[0][1], 17, "Hum : %.1f %%", currentHumidity);
+  } else {
+    snprintf(lcdPages[0][0], 17, "DHT22 waiting");
+    snprintf(lcdPages[0][1], 17, "Check sensor");
+  }
+  snprintf(lcdPages[1][0], 17, "Door Status:");
+  snprintf(lcdPages[1][1], 17, "%s", currentDoorClosed ? "CLOSED" : "OPEN");
+  bool connected = WiFi.status() == WL_CONNECTED;
+  snprintf(lcdPages[2][0], 17, "WiFi: %s", connected ? "CONNECTED" : "OFFLINE");
+  snprintf(lcdPages[2][1], 17, "%s", connected ? WiFi.localIP().toString().c_str() : "Saving offline");
+  snprintf(lcdPages[3][0], 17, "API:%s", backendLabel());
+  if (storageReady) {
+    uint16_t pending = queueCount();
+    const char* state = pending >= MAX_QUEUE_FILES ? "FULL" : pending > 0 ? "WAIT" : "IDLE";
+    snprintf(lcdPages[3][1], 17, "Q:%u/%u %s", pending, MAX_QUEUE_FILES, state);
+  } else {
+    snprintf(lcdPages[3][1], 17, "STORAGE ERROR");
+  }
+  snprintf(lcdPages[4][0], 17, "Smart Cold");
+  snprintf(lcdPages[4][1], 17, "Storage Monitor");
 }
 
 void showLCDNotice(LcdNotice notice) {
@@ -513,44 +576,13 @@ void showLCDNotice(LcdNotice notice) {
 }
 
 void updateLCD() {
+  refreshLCDPages();
   if (lcdNotice != LCD_NOTICE_NONE) {
     if ((int32_t)(millis() - lcdNoticeUntil) < 0) return;
     lcdNotice = LCD_NOTICE_NONE;
   }
   lastLcdRefresh = millis();
-  char row0[17], row1[17];
-  if (currentScreen == 0) {
-    if (!sensorDataAvailable) {
-      writeLCDRow(0, "DHT22 waiting");
-      writeLCDRow(1, "Check sensor");
-      return;
-    }
-    snprintf(row0, sizeof(row0), "Temp: %.1f C", currentTemperature);
-    snprintf(row1, sizeof(row1), "Hum : %.1f %%", currentHumidity);
-  } else if (currentScreen == 1) {
-    snprintf(row0, sizeof(row0), "Door Status:");
-    snprintf(row1, sizeof(row1), "%s", currentDoorClosed ? "CLOSED" : "OPEN");
-  } else if (currentScreen == 2) {
-    snprintf(row0, sizeof(row0), "WiFi: %s",
-      WiFi.status() == WL_CONNECTED ? "CONNECTED" : "OFFLINE");
-    snprintf(row1, sizeof(row1), "%s",
-      WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Saving offline");
-  } else if (currentScreen == 3) {
-    snprintf(row0, sizeof(row0), "API:%s", backendLabel());
-    if (!storageReady) {
-      snprintf(row1, sizeof(row1), "STORAGE ERROR");
-    } else {
-      uint16_t pending = queueCount();
-      const char* state = pending >= MAX_QUEUE_FILES ? "FULL" :
-        pending > 0 ? "WAIT" : "IDLE";
-      snprintf(row1, sizeof(row1), "Q:%u/%u %s", pending, MAX_QUEUE_FILES, state);
-    }
-  } else {
-    snprintf(row0, sizeof(row0), "Smart Cold");
-    snprintf(row1, sizeof(row1), "Storage Monitor");
-  }
-  writeLCDRow(0, row0);
-  writeLCDRow(1, row1);
+  renderCachedLCDPage();
 }
 
 void handleButton() {
@@ -566,7 +598,7 @@ void handleButton() {
   if (stableButtonState == HIGH) {
     currentScreen = (currentScreen + 1) % LCD_SCREEN_COUNT;
     lcdNotice = LCD_NOTICE_NONE;
-    updateLCD();
+    renderCachedLCDPage();
   }
 }
 
@@ -616,7 +648,7 @@ const char* wifiReasonHint(uint8_t reason) {
 
 void startWiFiJoin() {
   lastWiFiAttempt = millis();
-  Serial.println("WiFi join requested for the configured network");
+  DETAIL_SERIAL.println("WiFi join requested for the configured network");
 
   wl_status_t initialStatus = WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -638,15 +670,15 @@ void maintainWiFi() {
       configTime(0, 0, "pool.ntp.org", "time.nist.gov");
       lastNtpRequest = millis();
 
-      Serial.println();
-      Serial.println("WiFi Connected!");
-      Serial.print("IP Address: ");
-      Serial.println(WiFi.localIP());
-      Serial.print("Signal (RSSI): ");
-      Serial.print(WiFi.RSSI());
-      Serial.println(" dBm");
-      Serial.println("NTP synchronization requested");
-      Serial.println("--------------------------------");
+      DETAIL_SERIAL.println();
+      DETAIL_SERIAL.println("WiFi Connected!");
+      DETAIL_SERIAL.print("IP Address: ");
+      DETAIL_SERIAL.println(WiFi.localIP());
+      DETAIL_SERIAL.print("Signal (RSSI): ");
+      DETAIL_SERIAL.print(WiFi.RSSI());
+      DETAIL_SERIAL.println(" dBm");
+      DETAIL_SERIAL.println("NTP synchronization requested");
+      DETAIL_SERIAL.println("--------------------------------");
 
       uploadBackoffMs = UPLOAD_SUCCESS_GAP_MS;
       lastUploadAttempt = millis() - UPLOAD_SUCCESS_GAP_MS;
@@ -661,17 +693,17 @@ void maintainWiFi() {
   if (wifiDisconnectReasonPending) {
     wifiDisconnectReasonPending = false;
 
-    Serial.print("WiFi disconnected, reason code ");
-    Serial.print(lastWiFiDisconnectReason);
-    Serial.print(": ");
-    Serial.println(wifiReasonHint(lastWiFiDisconnectReason));
+    DETAIL_SERIAL.print("WiFi disconnected, reason code ");
+    DETAIL_SERIAL.print(lastWiFiDisconnectReason);
+    DETAIL_SERIAL.print(": ");
+    DETAIL_SERIAL.println(wifiReasonHint(lastWiFiDisconnectReason));
   }
 
   if (wasWiFiConnected) {
     wasWiFiConnected = false;
     lastWiFiAttempt = millis();
 
-    Serial.println(
+    DETAIL_SERIAL.println(
       storageReady
         ? "WiFi disconnected; readings continue into LittleFS queue"
         : "WiFi disconnected; storage is unavailable, so readings cannot be saved"
@@ -683,11 +715,11 @@ void maintainWiFi() {
   if (millis() - lastWiFiStatusReport >= WIFI_STATUS_REPORT_MS) {
     lastWiFiStatusReport = millis();
 
-    Serial.print("WiFi status: ");
-    Serial.print(wifiStatusName(status));
-    Serial.print(" (code ");
-    Serial.print((int)status);
-    Serial.println("); sensor readings continue while offline.");
+    DETAIL_SERIAL.print("WiFi status: ");
+    DETAIL_SERIAL.print(wifiStatusName(status));
+    DETAIL_SERIAL.print(" (code ");
+    DETAIL_SERIAL.print((int)status);
+    DETAIL_SERIAL.println("); sensor readings continue while offline.");
   }
 
   if (millis() - lastWiFiAttempt >= WIFI_RETRY_MS) {
@@ -750,7 +782,7 @@ bool enqueueReading(float temperature, float humidity, bool doorOpen) {
 
   doc["timeQuality"] = clockValid ? "ntp" : "unknown";
   doc["historical"] =
-    WiFi.status() != WL_CONNECTED || !clockValid || queueCount() > 0;
+    WiFi.status() != WL_CONNECTED || !clockValid;
 
   doc["bootNumber"] = bootNumber;
   doc["uptimeMs"] = millis();
@@ -773,7 +805,10 @@ bool enqueueReading(float temperature, float humidity, bool doorOpen) {
     return false;
   }
 
-  Serial.printf("Queued %s; pending=%u\n", id, queueCount());
+  // Prefer this fresh sample at the next upload opportunity. All other
+  // readings remain durable and drain oldest first between fresh samples.
+  latestQueuedPath = filename;
+  DETAIL_SERIAL.printf("Queued %s; pending=%u\n", id, queueCount());
   return true;
 }
 
@@ -846,7 +881,7 @@ void uploadOldest() {
 
   lastUploadAttempt = millis();
 
-  String path = oldestQueuePath();
+  String path = nextUploadPath();
   if (!path.length()) return;
 
   File file = LittleFS.open(path, "r");
@@ -905,7 +940,7 @@ void uploadOldest() {
         connectionChanged ||
         agedPastSampleInterval) {
       payload["historical"] = true;
-      Serial.println(
+      DETAIL_SERIAL.println(
         "Queued reading is now historical; live alerts will be skipped"
       );
     }
@@ -930,11 +965,13 @@ void uploadOldest() {
     return;
   }
 
-  BearSSL::WiFiClientSecure client;
+  // Keep both objects alive so HTTP keep-alive can reuse verified TLS.
+  static BearSSL::WiFiClientSecure client;
   client.setTrustAnchors(&trustAnchors);
   client.setSession(&cloudTlsSession);
 
-  HTTPClient http;
+  static HTTPClient http;
+  http.setReuse(true);
 
   if (!http.begin(client, SERVER_URL)) {
     backendState = BACKEND_RETRY;
@@ -973,8 +1010,8 @@ void uploadOldest() {
   String json;
   serializeJson(payload, json);
 
-  Serial.println("Sending JSON:");
-  Serial.println(json);
+  DETAIL_SERIAL.println("Sending JSON:");
+  DETAIL_SERIAL.println(json);
 
   backendState = BACKEND_SENDING;
   if (currentScreen == 3) updateLCD();
@@ -990,12 +1027,12 @@ void uploadOldest() {
   String response = status > 0 ? http.getString() : String();
   http.end();
 
-  Serial.print("HTTP Response Code: ");
-  Serial.println(status);
+  DETAIL_SERIAL.print("HTTP Response Code: ");
+  DETAIL_SERIAL.println(status);
 
   if (status > 0) {
-    Serial.println("Server Response:");
-    Serial.println(response);
+    DETAIL_SERIAL.println("Server Response:");
+    DETAIL_SERIAL.println(response);
   } else {
     Serial.print("HTTP POST failed: ");
     Serial.println(http.errorToString(status));
@@ -1031,7 +1068,7 @@ void uploadOldest() {
     );
 
     if (response.length()) {
-      Serial.println(response.substring(0, 160));
+      DETAIL_SERIAL.println(response.substring(0, 160));
     }
 
     deferUploadAfterFailure();
@@ -1065,10 +1102,12 @@ void uploadOldest() {
     return;
   }
 
+  if (path == latestQueuedPath) latestQueuedPath = String();
+
   uploadBackoffMs = UPLOAD_SUCCESS_GAP_MS;
   lastUploadAttempt = millis();
 
-  Serial.printf(
+  DETAIL_SERIAL.printf(
     "ACK %s; pending=%u\n",
     expectedId.c_str(), queueCount()
   );
@@ -1078,16 +1117,17 @@ void uploadOldest() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.setDebugOutput(false);
   delay(1000);
 
-  Serial.println();
-  Serial.println("================================");
-  Serial.println(" SMART COLD STORAGE - CLOUD 21.1.4");
-  Serial.println("================================");
-  Serial.print("Reset cause: ");
-  Serial.println(ESP.getResetReason());
+  DETAIL_SERIAL.println();
+  DETAIL_SERIAL.println("================================");
+  DETAIL_SERIAL.println(" SMART COLD STORAGE - CLOUD 21.1.5");
+  DETAIL_SERIAL.println("================================");
+  DETAIL_SERIAL.print("Reset cause: ");
+  DETAIL_SERIAL.println(ESP.getResetReason());
 
-  Serial.printf(
+  DETAIL_SERIAL.printf(
     "Flash size: IDE=%lu bytes, chip=%lu bytes, config=%s\n",
     (unsigned long)ESP.getFlashChipSize(),
     (unsigned long)ESP.getFlashChipRealSize(),
@@ -1109,8 +1149,8 @@ void setup() {
     configuredHost.indexOf('>') < 0 &&
     configuredHost.indexOf(' ') < 0;
 
-  Serial.println("Cloud endpoint: " + SERVER_URL);
-  Serial.println(
+  DETAIL_SERIAL.println("Cloud endpoint: " + SERVER_URL);
+  DETAIL_SERIAL.println(
     cloudConfigReady
       ? "Cloud settings: READY (key hidden)"
       : "Cloud settings: INVALID; set hostname only "
@@ -1126,7 +1166,7 @@ void setup() {
   stableButtonState = lastButtonState;
   lastButtonChange = millis();
 
-  Serial.println(
+  DETAIL_SERIAL.println(
     "Wiring: page button D0 -> button -> 3V3; LCD pin 12 -> D3"
   );
 
@@ -1141,30 +1181,30 @@ void setup() {
   LittleFSConfig fsConfig;
   fsConfig.setAutoFormat(false);
 
-  Serial.println(
+  DETAIL_SERIAL.println(
     "LittleFS: automatic formatting OFF (queued data protected)"
   );
 
   bool fsConfigured = LittleFS.setConfig(fsConfig);
-  Serial.printf(
+  DETAIL_SERIAL.printf(
     "LittleFS configuration: %s\n",
     fsConfigured ? "OK" : "FAILED"
   );
 
   if (!fsConfigured) {
-    Serial.println(
+    DETAIL_SERIAL.println(
       "Check ESP8266 core and Tools > Flash Size / FS layout"
     );
   }
 
   storageReady = fsConfigured && LittleFS.begin();
-  Serial.printf(
+  DETAIL_SERIAL.printf(
     "LittleFS mount: %s\n",
     storageReady ? "OK" : "FAILED"
   );
 
   if (fsConfigured && !storageReady) {
-    Serial.println(
+    DETAIL_SERIAL.println(
       "Check the selected FS layout; initialize only a confirmed empty device"
     );
   }
@@ -1173,21 +1213,21 @@ void setup() {
     FSInfo fsInfo;
 
     if (LittleFS.info(fsInfo)) {
-      Serial.printf(
+      DETAIL_SERIAL.printf(
         "LittleFS space: total=%lu bytes, used=%lu bytes, free=%lu bytes\n",
         (unsigned long)fsInfo.totalBytes,
         (unsigned long)fsInfo.usedBytes,
         (unsigned long)(fsInfo.totalBytes - fsInfo.usedBytes)
       );
     } else {
-      Serial.println("LittleFS space: could not read capacity");
+      DETAIL_SERIAL.println("LittleFS space: could not read capacity");
     }
 
     if (!LittleFS.exists("/q")) {
       storageReady = LittleFS.mkdir("/q");
 
       if (!storageReady) {
-        Serial.println("LittleFS queue directory /q: creation FAILED");
+        DETAIL_SERIAL.println("LittleFS queue directory /q: creation FAILED");
       }
     }
 
@@ -1198,23 +1238,23 @@ void setup() {
         ensureQueueWriteSpace(64, String()) && advanceBootNumber();
 
       if (!storageReady) {
-        Serial.println("LittleFS boot counter: update FAILED");
+        DETAIL_SERIAL.println("LittleFS boot counter: update FAILED");
       }
     }
   }
 
   if (storageReady) {
-    reportStorageSpace("READY");
-    Serial.printf(
+    if (SERIAL_VERBOSE) reportStorageSpace("READY");
+    DETAIL_SERIAL.printf(
       "Offline storage: READY; pending readings=%u of %u file limit\n",
       queueCount(), MAX_QUEUE_FILES
     );
   } else {
-    Serial.println(
+    DETAIL_SERIAL.println(
       "Offline storage: UNAVAILABLE; samples are NOT saved "
       "or uploaded, even with WiFi"
     );
-    Serial.println(
+    DETAIL_SERIAL.println(
       "Do not format automatically: queued readings may still be recoverable"
     );
   }
@@ -1223,7 +1263,7 @@ void setup() {
       !WIFI_SSID[0] ||
       strcmp(WIFI_SSID, "YOUR_WIFI_NAME") == 0 ||
       strcmp(WIFI_PASSWORD, "YOUR_WIFI_PASSWORD") == 0) {
-    Serial.println(
+    DETAIL_SERIAL.println(
       "WiFi setup needed: replace the example values in private wifi.h."
     );
   }
@@ -1249,6 +1289,18 @@ void setup() {
   showLCDNotice(LCD_NOTICE_CONNECTING);
 
   lastReading = millis() - READING_INTERVAL_MS;
+  if (!storageReady) Serial.println("ERROR: offline storage unavailable; check flash layout.");
+  if (!cloudConfigReady) Serial.println("ERROR: cloud hostname/key configuration invalid; check wifi.h.");
+  if (!ESP.checkFlashConfig()) Serial.println("ERROR: IDE flash size does not match chip.");
+  refreshLCDPages();
+  // D0/GPIO16 has no GPIO interrupt. Poll during core yield()/delay() calls
+  // as well as loop(), without doing network or filesystem work here.
+  lcdServiceReady = schedule_recurrent_function_us([]() {
+    handleButton();
+    serviceLCD();
+    return true;
+  }, 5000);
+  if (!lcdServiceReady) Serial.println("LCD background service unavailable; check free memory");
 }
 
 void loop() {
@@ -1271,8 +1323,7 @@ void loop() {
   if (
     (lcdNotice != LCD_NOTICE_NONE &&
      (int32_t)(millis() - lcdNoticeUntil) >= 0) ||
-    (currentScreen >= 2 &&
-     millis() - lastLcdRefresh >= 1000)
+    millis() - lastLcdRefresh >= 1000
   ) {
     updateLCD();
   }
@@ -1316,19 +1367,19 @@ void loop() {
 
       String doorStatus = currentDoorClosed ? "CLOSED" : "OPEN";
 
-      Serial.println();
-      Serial.println("--------- SENSOR DATA ---------");
-      Serial.print("Temperature : ");
-      Serial.print(temperature, 2);
-      Serial.println(" C");
-      Serial.print("Humidity    : ");
-      Serial.print(humidity, 2);
-      Serial.println(" %");
-      Serial.print("Door        : ");
-      Serial.println(doorStatus);
-      Serial.print("Door Analog : ");
-      Serial.println(currentDoorAnalog);
-      Serial.println("-------------------------------");
+      DETAIL_SERIAL.println();
+      DETAIL_SERIAL.println("--------- SENSOR DATA ---------");
+      DETAIL_SERIAL.print("Temperature : ");
+      DETAIL_SERIAL.print(temperature, 2);
+      DETAIL_SERIAL.println(" C");
+      DETAIL_SERIAL.print("Humidity    : ");
+      DETAIL_SERIAL.print(humidity, 2);
+      DETAIL_SERIAL.println(" %");
+      DETAIL_SERIAL.print("Door        : ");
+      DETAIL_SERIAL.println(doorStatus);
+      DETAIL_SERIAL.print("Door Analog : ");
+      DETAIL_SERIAL.println(currentDoorAnalog);
+      DETAIL_SERIAL.println("-------------------------------");
 
       enqueueReading(temperature, humidity, !currentDoorClosed);
       updateLCD();
@@ -1336,5 +1387,6 @@ void loop() {
   }
 
   uploadOldest();
+  if (!lcdServiceReady) serviceLCD();
   yield();
 }
