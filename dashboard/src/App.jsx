@@ -5,7 +5,7 @@ import {
 import "./App.css";
 import AnalyticsSection from "./AnalyticsSection";
 
-// Keep the existing backend and endpoints. No backend changes are required.
+// Keep the existing backend endpoints.
 const API_BASE = "http://localhost:5000";
 const POLL_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10000;
@@ -71,6 +71,11 @@ function validateHistory(payload) {
   return payload.data.filter(row => row && typeof row === "object").map(row => ({
     timestamp: row.timestamp,
     time: timeValue(row.timestamp),
+    capturedAt: row.capturedAt,
+    receivedAt: row.receivedAt,
+    historical: row.historical === true,
+    liveEligible: row.liveEligible === true,
+    readingId: row.readingId,
     temperature: number(row.temperature),
     humidity: number(row.humidity),
     riskScore: number(row.riskScore),
@@ -248,15 +253,16 @@ export default function App({ previewMode = false }) {
         </section>
 
         <section className="history-section" id="history" aria-labelledby="history-title">
-          <div className="section-header"><div><p className="eyebrow">THE BIGGER PICTURE</p><h2 id="history-title">Environmental trends</h2><p>Your recent readings, with the detail that matters.</p></div><div className="history-controls"><label htmlFor="history-limit">History window</label><select id="history-limit" value={historyLimit} onChange={event => setHistoryLimit(Number(event.target.value))}>{[25, 50, 100, 250].map(limit => <option value={limit} key={limit}>Last {limit} readings</option>)}</select></div></div>
+          <div className="section-header"><div><p className="eyebrow">THE BIGGER PICTURE</p><h2 id="history-title">Environmental trends</h2><p>Your recent readings, with the detail that matters.</p></div><div className="history-controls"><label htmlFor="history-limit">History window</label><select id="history-limit" value={historyLimit} onChange={event => setHistoryLimit(Number(event.target.value))}>{[25, 50, 100, 250, 500].map(limit => <option value={limit} key={limit}>Last {limit} readings</option>)}</select></div></div>
           {history.error && <div className="notice notice-warning"><Icon name="warning" /><div role="alert"><strong>{history.error}</strong><p>{rows.length ? "Charts show the last successful history response." : "Current sensor readings are shown independently."}</p></div><button className="button" type="button" disabled={history.pending} onClick={history.refresh}>{history.pending ? "Retrying…" : "Retry history"}</button></div>}
+          <p className="chart-summary">Offline readings appear here as they reach the server. If the device clock was unavailable, the chart uses server receipt time; the table marks the capture time as unknown. Live cards wait for a fresh reading.</p>
           {rows.length > chartRows.length && <p className="chart-summary">{rows.length - chartRows.length} reading(s) have an invalid timestamp and appear only in the data table.</p>}
           <div className="chart-grid">
             <HistoryChart title="Temperature" subtitle="Cold storage air temperature" rows={chartRows} dataKey="temperature" unit="°C" color="var(--temperature)" current={sensor?.temperature} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
             <HistoryChart title="Relative humidity" subtitle="Moisture level inside storage" rows={chartRows} dataKey="humidity" unit="%" color="var(--humidity)" current={sensor?.humidity} pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
             <HistoryChart title="Environmental risk" subtitle="Recorded risk scores · 0–100 scale" rows={chartRows} dataKey="riskScore" unit="/100" color="var(--risk-chart)" current={score} wide pending={history.pending && !history.data && !history.error} failed={Boolean(history.error)} />
           </div>
-          <div className="history-table"><details><summary>View reading data <span>{rows.length} readings</span></summary><div className="table-scroll" tabIndex={0} role="region" aria-label="Sensor readings table"><table><caption>History returned by the backend, oldest first. Missing values appear as a dash.</caption><thead><tr><th scope="col">Recorded at</th><th scope="col">Temperature (°C)</th><th scope="col">Humidity (%)</th><th scope="col">Risk (/100)</th><th scope="col">Risk level</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={index}><td>{timeLabel(row.timestamp, true)}</td><td>{format(row.temperature)}</td><td>{format(row.humidity)}</td><td>{format(row.riskScore, 0)}</td><td>{row.riskLevel || "—"}</td></tr>) : <tr><td colSpan={5}>No history readings available.</td></tr>}</tbody></table></div></details></div>
+          <div className="history-table"><details><summary>View reading data <span>{rows.length} readings</span></summary><div className="table-scroll" tabIndex={0} role="region" aria-label="Sensor readings table"><table><caption>History returned by the backend, oldest first. Times use your browser's timezone. Unknown capture times are shown at server receipt time in charts.</caption><thead><tr><th scope="col">Captured at</th><th scope="col">Server received</th><th scope="col">Delivery</th><th scope="col">Temperature (°C)</th><th scope="col">Humidity (%)</th><th scope="col">Risk (/100)</th><th scope="col">Risk level</th></tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={row.readingId || index}><td>{row.capturedAt ? timeLabel(row.capturedAt, true) : "Unknown (not recorded)"}</td><td>{timeLabel(row.receivedAt, true)}</td><td>{row.historical ? "Backfilled" : row.liveEligible ? "Live" : "Recorded"}</td><td>{format(row.temperature)}</td><td>{format(row.humidity)}</td><td>{format(row.riskScore, 0)}</td><td>{row.riskLevel || "—"}</td></tr>) : <tr><td colSpan={7}>No history readings available.</td></tr>}</tbody></table></div></details></div>
         </section>
         <AnalyticsSection historyData={chartRows} historyLimit={historyLimit}
           historyPending={history.pending && !history.data} historyError={history.error} />
