@@ -16,3 +16,5 @@ esp8266/firmware/wifi.h
 # OS
 .DS_Store
 Thumbs.db
+
+DEPLOYMENT.md
