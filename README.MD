@@ -67,7 +67,7 @@ esp8266/       Production sketch, configuration example and storage helpers
 
 ```bash
 git clone https://github.com/sachidanandnc/smart-cold-storage-monitoring-system.git
-cd smart-cold-storage-monitoring
+cd smart-cold-storage-monitoring-system
 ```
 
 ## Run the backend locally
